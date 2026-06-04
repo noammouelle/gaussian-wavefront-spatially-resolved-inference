@@ -2,10 +2,10 @@
 one_atom_traj.py — ais++ input file for a single-atom MAGIS-100-like trajectory.
 
 Parameters from arXiv:2506.0911 (SOTA pulse efficiencies):
-  - lmt_order  = 229   (228 π-kicks per LMT block; ~optimal for 1800 total pulses at Q=2)
-  - T          = 1.0 s (interrogation time per arm; peak GW sensitivity at 0.5 Hz)
-  - vz0        = 9.81 m/s (launch velocity; atom reaches apex at t ≈ T)
-  - loopnumber = 1    (single-loop Mach-Zehnder)
+  - lmt_order  = 300   (~optimal for 1800 total pulses (butterfly-crossing sequence))
+  - T          = 1.11 s (interrogation time per arm; peak GW sensitivity at 0.3 Hz)
+  - vz0        = 1.91*9.81 m/s (launch velocity; atom reaches apex at t ≈ T)
+  - loopnumber = 2    (double-loop Mach-Zehnder, insensitive to Coriolis)
 
 printtrajectory is enabled so ais++ writes a _TRAJ.h5 file alongside the main
 output.  Load it with aispy.trajectory.plot_trajectory to visualise the
@@ -36,15 +36,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from aispy.utils import AISFlow, pi, hbar, kz
 
 # ── default MAGIS-100 parameters ──────────────────────────────────────────────
-LMT_ORDER          = 229                        # must be odd
-INTERROGATION_TIME = mp.mpf('1.0')              # s  per arm
+LMT_ORDER          = 301                        # must be odd
+INTERROGATION_TIME = mp.mpf('1.11')              # s  per arm
 LOOP_NUMBER        = 2                           # double-loop MZ for Coriolis insensitivity
 RABI_FREQ          = 2 * pi * mp.mpf('1e3')    # rad/s  (1 kHz Rabi)
 DT_LMT             = mp.mpf('1e-7')             # s  LMT sub-pulse spacing
-VZ0                = 1.82 * mp.mpf('9.81')             # m/s  launch velocity
+VZ0                = 1.91 * mp.mpf('9.81')             # m/s  launch velocity
 
 # derived timing
-DETECTION_TIME = 4 * INTERROGATION_TIME - mp.mpf('0.2')
+DETECTION_TIME = 4 * INTERROGATION_TIME - mp.mpf('0.44')
 
 # ── beam parameters ───────────────────────────────────────────────────────────
 ZR          = 450.085              # m  Rayleigh range (w0 = 1 cm at Sr-87 clock λ)
@@ -56,9 +56,9 @@ def build_param_dict(lmt_order, interrogation_time, vz0):
         'cloud_params': {
             'natoms':       1,
             'initialstate': 0,
-            'sigma':        100e-6,     # transverse cloud radius (m)
+            'sigma':        0e-6,     # transverse cloud radius (m)
             'longtemp':     0,
-            'transtemp':    1e-9,       # 1 nK
+            'transtemp':    0e-9,       # 1 nK
             'x0':           [0.0, 0.0, 0.0],
             'v0':           [0.0, 0.0, float(vz0)],
         },
@@ -149,7 +149,7 @@ def main():
 
     print(f'MAGIS-100 single-atom trajectory')
     print(f'  lmt_order     : {n}  ({n - 1} π-kicks per LMT block)')
-    print(f'  T (per arm)   : {args.T} s   →  f_peak = {1 / (2 * args.T):.3f} Hz')
+    print(f'  T (per arm)   : {args.T} s   →  f_peak = {1 / (3 * args.T):.3f} Hz')
     print(f'  vz0           : {args.vz0} m/s')
     print(f'  Detection t   : {DETECTION_TIME} s')
     print()
