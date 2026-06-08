@@ -36,12 +36,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 from aispy.utils import AISFlow, pi, hbar, kz
 
 # ── interferometer parameters (match one_atom_traj.py) ────────────────────────
-LMT_ORDER          = 229
-INTERROGATION_TIME = mp.mpf('1.0')             # s  per arm
+LMT_ORDER          = 301
+INTERROGATION_TIME = mp.mpf('1.11')             # s  per arm
 LOOP_NUMBER        = 2                          # double-loop MZ
 RABI_FREQ          = 2 * pi * mp.mpf('1e3')   # rad/s
 DT_LMT             = mp.mpf('1e-7')            # s
-DETECTION_TIME     = 4 * INTERROGATION_TIME - mp.mpf('0.2')  # s
+DETECTION_TIME     = 4 * INTERROGATION_TIME - mp.mpf('0.44')  # s
+VZ0                = 1.91 * mp.mpf('9.81')            # m/s
 
 ZR         = 450.085               # m  Rayleigh range
 BEAM_WAIST = mp.sqrt(2 * ZR / kz)
@@ -157,7 +158,7 @@ def main():
     ygrid  = [-args.xrange,  args.xrange,  args.ny]
     vxgrid = [-args.vxrange, args.vxrange, args.nvx]
     vygrid = [-args.vxrange, args.vxrange, args.nvy]
-    vzgrid = [0.0, 0.0, 1]    # vz0 = 0
+    vzgrid = [VZ0, VZ0, 1]  # fixed launch velocity
 
     n_atoms = args.nx * args.ny * args.nvx * args.nvy
 
@@ -170,7 +171,7 @@ def main():
           f' = {n_atoms:,} atoms per file')
     print(f'  x0, y0 range     : ±{args.xrange*1e6:.1f} µm')
     print(f'  vx0, vy0 range   : ±{args.vxrange*1e3:.3f} mm/s')
-    print(f'  vz0              : 0.0 m/s (fixed)')
+    print(f'  vz0              : {float(VZ0):.3f} m/s')
     print(f'  lmt_order        : {LMT_ORDER},  loopnumber : {LOOP_NUMBER}')
     print(f'  Detection time   : {float(DETECTION_TIME):.3f} s')
     print()
