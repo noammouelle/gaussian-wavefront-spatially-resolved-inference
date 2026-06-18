@@ -36,11 +36,11 @@ def make_run(path, run_id, seed):
 
 def test_extract_run_counts_and_summaries(tmp_path):
     run_path = make_run(tmp_path, "run_000", 1)
-    result = extract_run(run_path, bins=8, xy_min=-3e-3, xy_max=3e-3)
+    result = extract_run(run_path, bins=8, xy_min=-4.0, xy_max=4.0)
 
     assert result["ground"].shape == (4, 8, 8)
     assert result["excited"].shape == (4, 8, 8)
-    assert result["summaries"].shape == (4, 5)
+    assert result["summaries"].shape == (4, 11)
     totals = result["ground"].sum(axis=(1, 2)) + result["excited"].sum(axis=(1, 2))
     assert np.all((totals > 190) & (totals <= 200))
 
@@ -51,16 +51,18 @@ def test_artifacts_and_contrast_fraction_equivalence(tmp_path):
     manifest = build_feature_artifacts(
         paths,
         feature_dir,
-        ExtractionConfig(bins=8, xy_min=-3e-3, xy_max=3e-3),
+        ExtractionConfig(bins=8, xy_min=-4.0, xy_max=4.0),
     )
 
     assert manifest["n_runs"] == 3
     assert manifest["n_shots"] == 12
     assert np.load(feature_dir / "ground_counts.npy", mmap_mode="r").shape == (12, 8, 8)
     metadata = np.load(feature_dir / "shot_metadata.npz")
-    assert metadata["summary_features"].shape == (12, 5)
+    assert metadata["summary_features"].shape == (12, 11)
     assert len(np.unique(metadata["run_id"])) == 3
-    assert json.loads((feature_dir / "manifest.json").read_text())["n_shots"] == 12
+    manifest_json = json.loads((feature_dir / "manifest.json").read_text())
+    assert manifest_json["n_shots"] == 12
+    assert manifest_json["config"]["coordinate_system"] == "cloud_normalized_final_position"
 
     fraction_path = tmp_path / "fraction.npz"
     contrast_path = tmp_path / "contrast.npz"

@@ -25,14 +25,24 @@ METADATA_KEYS = (
     "sigma_vx",
     "sigma_vy",
 )
-SUMMARY_NAMES = ("mean_x", "mean_y", "std_x", "std_y", "cov_xy")
+SUMMARY_NAMES = (
+    "mean_x", "mean_y", "std_x", "std_y", "cov_xy",
+    # Excitation-contrast moments: sensitive to phase-gradient across the cloud.
+    # cov(x, state) ~ k_x * sigma_x^2 * sin(phi0), where k_x is the local phase
+    # gradient in x. These are the features that break the mu_x0/mu_vx0 degeneracy.
+    "cov_x_state", "cov_y_state",
+    "cov_x2_state", "cov_y2_state",
+    # Excited-atom centroid: mean position of atoms that fired, shifted relative
+    # to the total-cloud centroid by the fringe pattern.
+    "mean_x_exc", "mean_y_exc",
+)
 
 
 @dataclass(frozen=True)
 class ExtractionConfig:
     bins: int = 64
-    xy_min: float = -5e-3
-    xy_max: float = 5e-3
+    xy_min: float = -4.0
+    xy_max: float = 4.0
     workers: int = 1
 
 
@@ -74,7 +84,12 @@ def _bincount_by_shot(shot_index, values, n_shots):
 
 
 def extract_run(path, bins, xy_min, xy_max):
-    """Return compact arrays for one HDF5 run."""
+    """Return compact arrays for one HDF5 run.
+
+    Count maps are made in cloud-normalized final coordinates:
+    u = (x - mean_x) / std_x and v = (y - mean_y) / std_y.
+    Physical final COM and spread are still returned as summary features.
+    """
     path = Path(path)
     started = time.perf_counter()
     edges = np.linspace(xy_min, xy_max, bins + 1)
@@ -88,8 +103,23 @@ def extract_run(path, bins, xy_min, xy_max):
 
         x = positions[:, 0]
         y = positions[:, 1]
-        ix = (np.searchsorted(edges, x, side="right") - 1).astype(np.int16)
-        iy = (np.searchsorted(edges, y, side="right") - 1).astype(np.int16)
+        counts = np.bincount(shot_index, minlength=n_shots)
+        mean_x = _bincount_by_shot(shot_index, x, n_shots) / counts
+        mean_y = _bincount_by_shot(shot_index, y, n_shots) / counts
+        var_x = _bincount_by_shot(shot_index, x * x, n_shots) / counts - mean_x**2
+        var_y = _bincount_by_shot(shot_index, y * y, n_shots) / counts - mean_y**2
+        std_x = np.sqrt(np.maximum(var_x, 0))
+        std_y = np.sqrt(np.maximum(var_y, 0))
+        cov_xy = (
+            _bincount_by_shot(shot_index, x * y, n_shots) / counts - mean_x * mean_y
+        )
+
+        safe_std_x = np.where(std_x > 0, std_x, 1.0)
+        safe_std_y = np.where(std_y > 0, std_y, 1.0)
+        x_norm = (x - mean_x[shot_index]) / safe_std_x[shot_index]
+        y_norm = (y - mean_y[shot_index]) / safe_std_y[shot_index]
+        ix = (np.searchsorted(edges, x_norm, side="right") - 1).astype(np.int16)
+        iy = (np.searchsorted(edges, y_norm, side="right") - 1).astype(np.int16)
         inside = (ix >= 0) & (ix < bins) & (iy >= 0) & (iy < bins)
         flat_pixel = (ix[inside] * bins + iy[inside]).astype(np.int32)
         flat_shot_pixel = shot_index[inside].astype(np.int64) * n_pixels + flat_pixel
@@ -104,17 +134,28 @@ def extract_run(path, bins, xy_min, xy_max):
         if max(ground.max(initial=0), excited.max(initial=0)) > np.iinfo(np.uint32).max:
             raise OverflowError(f"Pixel count exceeds uint32 range in {path}")
 
-        counts = np.bincount(shot_index, minlength=n_shots)
-        mean_x = _bincount_by_shot(shot_index, x, n_shots) / counts
-        mean_y = _bincount_by_shot(shot_index, y, n_shots) / counts
-        var_x = _bincount_by_shot(shot_index, x * x, n_shots) / counts - mean_x**2
-        var_y = _bincount_by_shot(shot_index, y * y, n_shots) / counts - mean_y**2
-        cov_xy = (
-            _bincount_by_shot(shot_index, x * y, n_shots) / counts - mean_x * mean_y
+        s = states.astype(np.float32)
+        mean_state = _bincount_by_shot(shot_index, s, n_shots) / counts
+        cov_x_state = _bincount_by_shot(shot_index, x * s, n_shots) / counts - mean_x * mean_state
+        cov_y_state = _bincount_by_shot(shot_index, y * s, n_shots) / counts - mean_y * mean_state
+        cov_x2_state = (
+            _bincount_by_shot(shot_index, x * x * s, n_shots) / counts
+            - (var_x + mean_x**2) * mean_state
         )
-        summaries = np.column_stack(
-            [mean_x, mean_y, np.sqrt(np.maximum(var_x, 0)), np.sqrt(np.maximum(var_y, 0)), cov_xy]
+        cov_y2_state = (
+            _bincount_by_shot(shot_index, y * y * s, n_shots) / counts
+            - (var_y + mean_y**2) * mean_state
         )
+
+        exc_counts = np.maximum(_bincount_by_shot(shot_index, s, n_shots), 1)
+        mean_x_exc = _bincount_by_shot(shot_index, x * s, n_shots) / exc_counts
+        mean_y_exc = _bincount_by_shot(shot_index, y * s, n_shots) / exc_counts
+
+        summaries = np.column_stack([
+            mean_x, mean_y, std_x, std_y, cov_xy,
+            cov_x_state, cov_y_state, cov_x2_state, cov_y2_state,
+            mean_x_exc, mean_y_exc,
+        ])
         metadata = {key: handle[key][:] for key in METADATA_KEYS}
 
     return {
@@ -205,6 +246,11 @@ def build_feature_artifacts(paths, output_dir, config, overwrite=False):
             "bins": config.bins,
             "xy_min": config.xy_min,
             "xy_max": config.xy_max,
+            "coordinate_system": "cloud_normalized_final_position",
+            "coordinate_definition": {
+                "x": "(final_x - mean_x) / std_x",
+                "y": "(final_y - mean_y) / std_y",
+            },
             "workers": config.workers,
         },
         "n_runs": len(records),

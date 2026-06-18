@@ -97,12 +97,12 @@ def build_param_dict(xgrid, ygrid, zgrid, vxgrid, vygrid, vzgrid):
         },
         'pulse_params': {
             'rabi_freq':      RABI_FREQ,
-            'wtype':          'gaussian',
+            'wtype':          'confocal',
             'phi0':           0,
             'kx_psr':         0,
             'ky_psr':         0,
             'waist':          BEAM_WAIST,
-            'focallength':    0,
+            'focallength':    50,
             'zupwardlaser':   0,
             'zdownwardlaser': 0,
             'beam_radius':    1.0,
@@ -176,7 +176,7 @@ def main():
     print(f'  Detection time   : {float(DETECTION_TIME):.3f} s')
     print()
 
-    stems = {z0: f'PSGRID4D_Z{int(z0)}' for z0 in Z0_VALUES}
+    stems = {z0: f'PSGRID4D_CONFOCAL_Z{int(z0)}' for z0 in Z0_VALUES}
 
     for z0 in Z0_VALUES:
         zgrid  = [z0, z0, 1]

@@ -19,8 +19,8 @@ def parse_args():
     parser.add_argument("--output", type=Path, required=True, help="Artifact output directory")
     parser.add_argument("--port", default="Z0", choices=("Z0", "Z100"))
     parser.add_argument("--bins", type=int, default=64)
-    parser.add_argument("--xy-min", type=float, default=-5e-3)
-    parser.add_argument("--xy-max", type=float, default=5e-3)
+    parser.add_argument("--xy-min", type=float, default=-4.0)
+    parser.add_argument("--xy-max", type=float, default=4.0)
     parser.add_argument("--max-runs", type=int)
     parser.add_argument(
         "--workers",
