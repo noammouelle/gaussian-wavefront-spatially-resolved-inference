@@ -194,21 +194,20 @@ def _init_h5(f, phi0, delta_phi, cloud_params, signal_params,
     f.attrs['signal_phase']     = signal_params['phase']
 
 
-def _write_shot_image(f, shot_i, states, xf, yf, edges):
-    """Bin one shot's detected atoms into state-0 and state-1 images."""
-    s0 = (states == 0)
-    img_s0, _, _ = np.histogram2d(xf[s0],  yf[s0],  bins=edges)
-    img_s1, _, _ = np.histogram2d(xf[~s0], yf[~s0], bins=edges)
-    f['images_s0'][shot_i] = img_s0.astype(np.uint16)
-    f['images_s1'][shot_i] = img_s1.astype(np.uint16)
+def _write_shot_image(f, shot_i, img_s0, img_s1):
+    """Write pre-computed state images for one shot into an open HDF5 file."""
+    f['images_s0'][shot_i] = img_s0
+    f['images_s1'][shot_i] = img_s1
 
 
-def _iter_shots(surrogate, cloud_params, phi0, n_atoms, rng):
+def _iter_shots(surrogate, cloud_params, phi0, n_atoms, edges, rng):
     """
-    Yield (states, xf, yf) numpy arrays for each shot.
+    Yield (shot_i, img_s0, img_s1) uint16 images for each shot.
 
-    Uses the GPU fast path (_return_arrays=True): atoms are sampled on GPU
-    and only the three necessary arrays are transferred back to CPU.
+    Uses the GPU image path (_image_edges): atoms are sampled, interpolated,
+    and histogrammed entirely on the GPU; only the two (res, res) uint16
+    images are transferred to CPU (~8 MB vs ~1.6 GB at 10^8 atoms).
+    Falls back to CPU histogramming when CuPy is unavailable.
     Prints an in-place progress bar.
     """
     (mu_x0, mu_y0, mu_vx0, mu_vy0,
@@ -221,7 +220,7 @@ def _iter_shots(surrogate, cloud_params, phi0, n_atoms, rng):
     for i in range(n_shots):
         t0 = time.perf_counter()
 
-        states, xf, yf = surrogate.generate_atoms(
+        img_s0, img_s1 = surrogate.generate_atoms(
             mu_x0=mu_x0[i],   mu_y0=mu_y0[i],
             mu_vx0=mu_vx0[i], mu_vy0=mu_vy0[i],
             sigma_x=sigma_x[i],   sigma_y=sigma_y[i],
@@ -229,7 +228,7 @@ def _iter_shots(surrogate, cloud_params, phi0, n_atoms, rng):
             phi0=float(phi0[i]),
             natoms=n_atoms,
             rng=rng,
-            _return_arrays=True,
+            _image_edges=edges,
         )
 
         shot_times.append(time.perf_counter() - t0)
@@ -245,7 +244,7 @@ def _iter_shots(surrogate, cloud_params, phi0, n_atoms, rng):
               f'  ETA {_fmt_time(eta)}   ',
               end='\r', flush=True)
 
-        yield i, states, xf, yf
+        yield i, img_s0, img_s1
 
     total = time.perf_counter() - t_start
     print(f'  [{"█"*bar_w}] {n_shots}/{n_shots}'
@@ -279,10 +278,10 @@ def _simulate_run(run_idx, rng, args, surrogates, data_root,
         with h5py.File(out, 'w') as f:
             _init_h5(f, phi0_eff, dphi_z, cloud_params, signal_params,
                      args.n_atoms, half_range, args.image_res, float(z0_m))
-            for shot_i, states, xf, yf in _iter_shots(
+            for shot_i, img_s0, img_s1 in _iter_shots(
                     surrogates[z0_m], cloud_params, phi0_eff,
-                    args.n_atoms, rng):
-                _write_shot_image(f, shot_i, states, xf, yf, edges)
+                    args.n_atoms, edges, rng):
+                _write_shot_image(f, shot_i, img_s0, img_s1)
 
         print(f'  → {out}  ({os.path.getsize(out)/1e6:.1f} MB)')
 

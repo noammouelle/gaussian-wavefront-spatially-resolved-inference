@@ -3,6 +3,7 @@ Tests for the image-based data pipeline:
   - ImageShotDataset (helpers.py)
   - convert_to_images.py conversion logic
   - generate_data._compute_image_half_range
+  - PSMAPSurrogate._image_edges GPU/CPU histogram path
 """
 
 import math
@@ -278,3 +279,119 @@ class TestComputeHalfRange:
 
         assert (_compute_image_half_range(LargeArgs()) >
                 _compute_image_half_range(SmallArgs()))
+
+
+# ── PSMAPSurrogate _image_edges tests ────────────────────────────────────────
+
+PSMAP_PATH = os.path.join(
+    os.path.dirname(__file__), '..', 'output-files', 'PSGRID4D_Z0.h5')
+
+
+@pytest.fixture(scope='module')
+def surrogate_gpu():
+    """Load a PSMAPSurrogate once for the whole module (GPU if available)."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'local', 'aispy'))
+    from aispy.psmap import load_psmap, PSMAPSurrogate
+    return PSMAPSurrogate(load_psmap(PSMAP_PATH), t_det=3.8, use_gpu=True)
+
+
+@pytest.fixture(scope='module')
+def surrogate_cpu():
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__),
+                                    '..', '..', '..', 'local', 'aispy'))
+    from aispy.psmap import load_psmap, PSMAPSurrogate
+    return PSMAPSurrogate(load_psmap(PSMAP_PATH), t_det=3.8, use_gpu=False)
+
+
+class TestImageEdgesPath:
+    N       = 200_000
+    RES     = 64
+    HR      = 5e-3
+    EDGES   = np.linspace(-5e-3, 5e-3, RES + 1)
+    KWARGS  = dict(mu_x0=0, mu_y0=0, mu_vx0=0, mu_vy0=0,
+                   sigma_x=1e-4, sigma_y=1e-4,
+                   sigma_vx=3e-4, sigma_vy=3e-4,
+                   natoms=N, rng=np.random.default_rng(7))
+
+    def test_returns_two_uint16_images(self, surrogate_gpu):
+        result = surrogate_gpu.generate_atoms(**self.KWARGS,
+                                              _image_edges=self.EDGES)
+        assert isinstance(result, tuple) and len(result) == 2
+        img_s0, img_s1 = result
+        assert img_s0.shape == (self.RES, self.RES)
+        assert img_s1.shape == (self.RES, self.RES)
+        assert img_s0.dtype == np.uint16
+        assert img_s1.dtype == np.uint16
+
+    def test_pixel_sum_positive(self, surrogate_gpu):
+        img_s0, img_s1 = surrogate_gpu.generate_atoms(
+            **self.KWARGS, _image_edges=self.EDGES)
+        assert int(img_s0.sum()) + int(img_s1.sum()) > 0
+
+    def test_matches_cpu_histogram(self, surrogate_gpu):
+        """cp.histogram2d must give identical counts to np.histogram2d.
+
+        The GPU fast path ignores the numpy ``rng`` argument (it uses CuPy's
+        own RNG), so we cannot compare two generate_atoms calls to test this.
+        Instead: get per-atom arrays, compute both histograms on the same
+        atoms, and assert equality.
+        """
+        try:
+            import cupy as cp
+        except ImportError:
+            pytest.skip('CuPy not available')
+
+        states, xf, yf = surrogate_gpu.generate_atoms(
+            mu_x0=0, mu_y0=0, mu_vx0=0, mu_vy0=0,
+            sigma_x=1e-4, sigma_y=1e-4,
+            sigma_vx=3e-4, sigma_vy=3e-4,
+            natoms=self.N, rng=np.random.default_rng(42),
+            _return_arrays=True,
+        )
+        s0 = (states == 0)
+
+        # Reference: numpy histogram
+        ref_s0, _, _ = np.histogram2d(xf[ s0], yf[ s0], bins=self.EDGES)
+        ref_s1, _, _ = np.histogram2d(xf[~s0], yf[~s0], bins=self.EDGES)
+
+        # CuPy histogram of the same atoms
+        edges_g  = cp.asarray(self.EDGES)
+        gpu_s0, _, _ = cp.histogram2d(cp.asarray(xf[ s0]), cp.asarray(yf[ s0]), bins=edges_g)
+        gpu_s1, _, _ = cp.histogram2d(cp.asarray(xf[~s0]), cp.asarray(yf[~s0]), bins=edges_g)
+
+        np.testing.assert_array_equal(gpu_s0.get().astype(np.uint16),
+                                      ref_s0.astype(np.uint16))
+        np.testing.assert_array_equal(gpu_s1.get().astype(np.uint16),
+                                      ref_s1.astype(np.uint16))
+
+    def test_cpu_fallback_returns_images(self, surrogate_cpu):
+        """CPU (use_gpu=False) path must also return (img_s0, img_s1)."""
+        result = surrogate_cpu.generate_atoms(**self.KWARGS,
+                                              _image_edges=self.EDGES)
+        assert isinstance(result, tuple) and len(result) == 2
+        img_s0, img_s1 = result
+        assert img_s0.dtype == np.uint16
+        assert img_s0.shape == (self.RES, self.RES)
+
+    def test_cpu_fallback_matches_gpu(self, surrogate_gpu, surrogate_cpu):
+        """CPU and GPU image paths must agree on pixel sums (not exact values,
+        since the RNG state evolves differently on GPU vs CPU)."""
+        kw = dict(mu_x0=0, mu_y0=0, mu_vx0=0, mu_vy0=0,
+                  sigma_x=1e-4, sigma_y=1e-4,
+                  sigma_vx=3e-4, sigma_vy=3e-4,
+                  natoms=500_000, _image_edges=self.EDGES)
+        g0, g1 = surrogate_gpu.generate_atoms(**kw, rng=np.random.default_rng(1))
+        c0, c1 = surrogate_cpu.generate_atoms(**kw, rng=np.random.default_rng(1))
+        # Total counts should be within ±5% (same physics, different RNG backend)
+        n_gpu = int(g0.sum()) + int(g1.sum())
+        n_cpu = int(c0.sum()) + int(c1.sum())
+        assert abs(n_gpu - n_cpu) / n_cpu < 0.05
+
+    def test_image_edges_overrides_return_arrays(self, surrogate_gpu):
+        """_image_edges takes precedence over _return_arrays=True."""
+        result = surrogate_gpu.generate_atoms(**self.KWARGS,
+                                              _return_arrays=True,
+                                              _image_edges=self.EDGES)
+        assert isinstance(result, tuple) and len(result) == 2
+        assert result[0].dtype == np.uint16
