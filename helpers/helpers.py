@@ -5,6 +5,8 @@ import h5py
 import numpy as np
 import pandas as pd
 
+T_DET = 3.8   # detection time [s], must match generate_data.py
+
 
 class ShotDataset:
     """
@@ -29,15 +31,17 @@ class ShotDataset:
     def __init__(self, path):
         with h5py.File(path) as f:
             shot_idx      = f['shot_index'][:]
-            self._df = pd.DataFrame({
+            atom_data = {
                 'x':     f['positions'][:, 0],
                 'y':     f['positions'][:, 1],
-                'vx':    f['velocities'][:, 0],
-                'vy':    f['velocities'][:, 1],
                 'state': f['states'][:].astype(int),
                 'prob':  f['probabilities'][:],
                 'shot':  shot_idx,
-            })
+            }
+            if 'velocities' in f:
+                atom_data['vx'] = f['velocities'][:, 0]
+                atom_data['vy'] = f['velocities'][:, 1]
+            self._df = pd.DataFrame(atom_data)
             for k in self._META_KEYS:
                 setattr(self, k, f[k][:])
 
@@ -118,15 +122,17 @@ class LazyShotDataset:
 
         s = self._shot_slice(idx)
         with h5py.File(self.path) as f:
-            return pd.DataFrame({
+            atom_data = {
                 'x':     f['positions'][s, 0],
                 'y':     f['positions'][s, 1],
-                'vx':    f['velocities'][s, 0],
-                'vy':    f['velocities'][s, 1],
                 'state': f['states'][s].astype(int),
                 'prob':  f['probabilities'][s],
                 'shot':  np.full(s.stop - s.start, idx, dtype=np.int32),
-            })
+            }
+            if 'velocities' in f:
+                atom_data['vx'] = f['velocities'][s, 0]
+                atom_data['vy'] = f['velocities'][s, 1]
+            return pd.DataFrame(atom_data)
 
     def __iter__(self):
         for i in range(self.n_shots):
@@ -139,15 +145,102 @@ class LazyShotDataset:
 
     def state_counts(self):
         """Return a DataFrame indexed by shot with columns 0 and 1."""
-        counts = np.zeros((self.n_shots, 2), dtype=np.int64)
-
+        # Bulk-read all states in one HDF5 call, then split by shot.
+        # ~10x faster than the per-shot slice loop for large files with
+        # compressed chunks, because gzip decompression happens in one pass.
         with h5py.File(self.path) as f:
-            states = f['states']
-            for i in range(self.n_shots):
-                s = self._shot_slice(i)
-                shot_states = states[s]
-                counts[i] = np.bincount(shot_states.astype(np.int8),
-                                        minlength=2)[:2]
+            all_states = f['states'][:]
 
-        return pd.DataFrame(counts, columns=[0, 1])
+        n_per_shot = (self._stops - self._starts).astype(np.int64)
+        shot_idx   = np.repeat(np.arange(self.n_shots, dtype=np.int32), n_per_shot)
+        n0 = np.bincount(shot_idx[all_states == 0], minlength=self.n_shots)
+        n1 = np.bincount(shot_idx[all_states == 1], minlength=self.n_shots)
+        return pd.DataFrame({0: n0, 1: n1})
+
+
+class ImageShotDataset:
+    """
+    Shot dataset backed by a data_IMG.h5 file (2D histogram format).
+
+    Each shot is stored as two (res, res) uint16 images: one for each
+    output state.  Images are pixel-aligned across all shots and files
+    of the same experiment (shared bin edges from generation parameters).
+
+    Usage
+    -----
+    ds = ImageShotDataset('../data/run/Z0/data_IMG.h5')
+
+    ds.n_shots          # int
+    ds.half_range       # float [m] — half the image window
+    ds.res              # int — pixels per side
+    ds.edges            # (res+1,) bin edges [m]
+    ds.pixel_centers    # (res,) pixel centre positions [m]
+    ds.phi0             # (n_shots,) phase offsets [rad]
+    ds[i]               # (2, res, res) uint16 — images_s0, images_s1
+    ds[3:7]             # (4, 2, res, res) uint16
+    ds.state_counts()   # DataFrame with columns {0, 1}, n_shots rows
+    ds.meta(i)          # dict of per-shot cloud params
+    """
+
+    _META_KEYS = ['phi0', 'delta_phi', 'mu_x0', 'mu_y0', 'mu_vx0', 'mu_vy0',
+                  'sigma_x', 'sigma_y', 'sigma_vx', 'sigma_vy']
+
+    def __init__(self, path):
+        self.path = path
+        with h5py.File(path) as f:
+            self.half_range     = float(f.attrs['image_half_range'])
+            self.res            = int(f.attrs['image_res'])
+            self.z0_m           = float(f.attrs['z0_m'])
+            self.n_atoms_launched = int(f.attrs['n_atoms_launched'])
+            for k in self._META_KEYS:
+                if k in f:
+                    setattr(self, k, f[k][:])
+
+        self.n_shots     = len(self.phi0)
+        self.edges       = np.linspace(-self.half_range, self.half_range,
+                                       self.res + 1)
+        self.pixel_size  = 2 * self.half_range / self.res
+        self.pixel_centers = 0.5 * (self.edges[:-1] + self.edges[1:])
+
+    def __len__(self):
+        return self.n_shots
+
+    def __getitem__(self, idx):
+        """Return (2, res, res) uint16 or (n, 2, res, res) for a slice."""
+        with h5py.File(self.path) as f:
+            if isinstance(idx, slice):
+                s0 = f['images_s0'][idx]
+                s1 = f['images_s1'][idx]
+                return np.stack([s0, s1], axis=1)
+            s0 = f['images_s0'][idx]
+            s1 = f['images_s1'][idx]
+        return np.stack([s0, s1], axis=0)
+
+    def __iter__(self):
+        for i in range(self.n_shots):
+            yield self[i]
+
+    def meta(self, i):
+        return {k: getattr(self, k)[i]
+                for k in self._META_KEYS if hasattr(self, k)}
+
+    def state_counts(self):
+        """
+        Total detected atoms per shot per state.
+
+        Returns a DataFrame with columns {0, 1} and n_shots rows.
+        Equivalent to summing all pixel counts, but reads the full image
+        arrays in one HDF5 call for efficiency.
+        """
+        with h5py.File(self.path) as f:
+            n0 = f['images_s0'][:].sum(axis=(1, 2))
+            n1 = f['images_s1'][:].sum(axis=(1, 2))
+        return pd.DataFrame({0: n0.astype(np.int64),
+                              1: n1.astype(np.int64)})
+
+    def detection_efficiency(self):
+        """Mean fraction of launched atoms that were detected."""
+        counts = self.state_counts()
+        total  = (counts[0] + counts[1]).mean()
+        return float(total) / self.n_atoms_launched
 
