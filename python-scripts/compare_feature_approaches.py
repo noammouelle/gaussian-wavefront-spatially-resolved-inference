@@ -21,6 +21,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "helpers"))
+from helpers import ImageShotDataset  # noqa: E402
 ARTIFACT_DIR = REPO / "results" / "2d-shot-features"
 DATA_ROOT = REPO / "data" / (
     "R80_N50_A1000000_muXStd10.0um_muVxStd10.0um_sigX100um_sigVx309um"
@@ -29,35 +31,38 @@ DATA_ROOT = REPO / "data" / (
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def bincount_shot(shot_index, weights, n_shots):
-    return np.bincount(shot_index, weights=weights, minlength=n_shots)
+def extract_contrast_moments(img_path):
+    """Return (n_shots, 6) array of contrast-moment summary features from a data_IMG.h5 file."""
+    ds = ImageShotDataset(img_path)
+    pc = ds.pixel_centers
 
+    with h5py.File(img_path, "r") as f:
+        imgs_s0 = f["images_s0"][:].astype(np.float64)  # (n_shots, res, res)
+        imgs_s1 = f["images_s1"][:].astype(np.float64)
 
-def extract_contrast_moments(h5_path):
-    """Return (n_shots, 6) array of contrast-moment summary features."""
-    with h5py.File(h5_path, "r") as f:
-        shot_index = f["shot_index"][:]
-        x = f["positions"][:, 0]
-        y = f["positions"][:, 1]
-        s = f["states"][:].astype(np.float32)
-        n_shots = int(f["phi0"].shape[0])
+    total = imgs_s0 + imgs_s1
+    counts = total.sum(axis=(1, 2))
+    safe_counts = np.where(counts > 0, counts, 1.0)
 
-    counts = np.bincount(shot_index, minlength=n_shots).astype(np.float64)
-    mean_x = bincount_shot(shot_index, x, n_shots) / counts
-    mean_y = bincount_shot(shot_index, y, n_shots) / counts
-    mean_s = bincount_shot(shot_index, s, n_shots) / counts
-    var_x  = bincount_shot(shot_index, x * x, n_shots) / counts - mean_x**2
-    var_y  = bincount_shot(shot_index, y * y, n_shots) / counts - mean_y**2
+    pc2 = pc ** 2
+    mean_x = (total * pc[None, :, None]).sum(axis=(1, 2)) / safe_counts
+    mean_y = (total * pc[None, None, :]).sum(axis=(1, 2)) / safe_counts
+    var_x  = (total * pc2[None, :, None]).sum(axis=(1, 2)) / safe_counts - mean_x ** 2
+    var_y  = (total * pc2[None, None, :]).sum(axis=(1, 2)) / safe_counts - mean_y ** 2
 
-    cov_x_state  = bincount_shot(shot_index, x * s, n_shots) / counts - mean_x * mean_s
-    cov_y_state  = bincount_shot(shot_index, y * s, n_shots) / counts - mean_y * mean_s
-    cov_x2_state = (bincount_shot(shot_index, x * x * s, n_shots) / counts
-                    - (var_x + mean_x**2) * mean_s)
-    cov_y2_state = (bincount_shot(shot_index, y * y * s, n_shots) / counts
-                    - (var_y + mean_y**2) * mean_s)
-    exc_counts   = np.maximum(bincount_shot(shot_index, s, n_shots), 1)
-    mean_x_exc   = bincount_shot(shot_index, x * s, n_shots) / exc_counts
-    mean_y_exc   = bincount_shot(shot_index, y * s, n_shots) / exc_counts
+    n1 = imgs_s1
+    exc_total = n1.sum(axis=(1, 2))
+    mean_s = exc_total / safe_counts
+    safe_exc = np.where(exc_total > 0, exc_total, 1.0)
+
+    cov_x_state  = (n1 * pc[None, :, None]).sum(axis=(1, 2)) / safe_counts - mean_x * mean_s
+    cov_y_state  = (n1 * pc[None, None, :]).sum(axis=(1, 2)) / safe_counts - mean_y * mean_s
+    cov_x2_state = ((n1 * pc2[None, :, None]).sum(axis=(1, 2)) / safe_counts
+                    - (var_x + mean_x ** 2) * mean_s)
+    cov_y2_state = ((n1 * pc2[None, None, :]).sum(axis=(1, 2)) / safe_counts
+                    - (var_y + mean_y ** 2) * mean_s)
+    mean_x_exc   = (n1 * pc[None, :, None]).sum(axis=(1, 2)) / safe_exc
+    mean_y_exc   = (n1 * pc[None, None, :]).sum(axis=(1, 2)) / safe_exc
 
     return np.column_stack([
         cov_x_state, cov_y_state, cov_x2_state, cov_y2_state,
@@ -156,7 +161,7 @@ def main():
 
     # ── Approach 1: contrast moments ──────────────────────────────────────────
     print("\nExtracting contrast-moment features from HDF5 files …")
-    run_dirs = sorted(DATA_ROOT.glob("run_*/Z0/data_PROB.h5"))
+    run_dirs = sorted(DATA_ROOT.glob("run_*/Z0/data_IMG.h5"))
     if not run_dirs:
         print(f"ERROR: no HDF5 files found under {DATA_ROOT}")
         sys.exit(1)

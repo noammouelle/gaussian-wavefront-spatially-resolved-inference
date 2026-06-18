@@ -51,11 +51,11 @@ def utc_now():
 
 
 def discover_run_paths(data_root, port="Z0", max_runs=None):
-    paths = sorted(Path(data_root).glob(f"run_*/{port}/data_PROB.h5"))
+    paths = sorted(Path(data_root).glob(f"run_*/{port}/data_IMG.h5"))
     if max_runs is not None:
         paths = paths[:max_runs]
     if not paths:
-        raise FileNotFoundError(f"No run_*/{port}/data_PROB.h5 files below {data_root}")
+        raise FileNotFoundError(f"No run_*/{port}/data_IMG.h5 files below {data_root}")
     return paths
 
 
@@ -71,7 +71,7 @@ def inspect_runs(paths):
                     "path": str(path.resolve()),
                     "run_id": path.parents[1].name,
                     "n_shots": int(handle["phi0"].shape[0]),
-                    "n_atoms": int(handle["states"].shape[0]),
+                    "n_atoms": int(handle.attrs.get("n_atoms_launched", 0)),
                     "size_bytes": path.stat().st_size,
                     "mtime_ns": path.stat().st_mtime_ns,
                 }
@@ -79,92 +79,97 @@ def inspect_runs(paths):
     return records
 
 
-def _bincount_by_shot(shot_index, values, n_shots):
-    return np.bincount(shot_index, weights=values, minlength=n_shots)
-
-
 def extract_run(path, bins, xy_min, xy_max):
-    """Return compact arrays for one HDF5 run.
+    """Return compact arrays for one data_IMG.h5 run.
 
-    Count maps are made in cloud-normalized final coordinates:
+    Count maps are built in cloud-normalized final coordinates:
     u = (x - mean_x) / std_x and v = (y - mean_y) / std_y.
+    Moments are computed from pixel-weighted sums over the 2D histograms.
     Physical final COM and spread are still returned as summary features.
     """
     path = Path(path)
     started = time.perf_counter()
-    edges = np.linspace(xy_min, xy_max, bins + 1)
+    bin_width = (xy_max - xy_min) / bins
     n_pixels = bins * bins
 
     with h5py.File(path, "r") as handle:
-        shot_index = handle["shot_index"][:]
-        positions = handle["positions"][:, :2]
-        states = handle["states"][:].astype(bool, copy=False)
-        n_shots = int(handle["phi0"].shape[0])
-
-        x = positions[:, 0]
-        y = positions[:, 1]
-        counts = np.bincount(shot_index, minlength=n_shots)
-        mean_x = _bincount_by_shot(shot_index, x, n_shots) / counts
-        mean_y = _bincount_by_shot(shot_index, y, n_shots) / counts
-        var_x = _bincount_by_shot(shot_index, x * x, n_shots) / counts - mean_x**2
-        var_y = _bincount_by_shot(shot_index, y * y, n_shots) / counts - mean_y**2
-        std_x = np.sqrt(np.maximum(var_x, 0))
-        std_y = np.sqrt(np.maximum(var_y, 0))
-        cov_xy = (
-            _bincount_by_shot(shot_index, x * y, n_shots) / counts - mean_x * mean_y
-        )
-
-        safe_std_x = np.where(std_x > 0, std_x, 1.0)
-        safe_std_y = np.where(std_y > 0, std_y, 1.0)
-        x_norm = (x - mean_x[shot_index]) / safe_std_x[shot_index]
-        y_norm = (y - mean_y[shot_index]) / safe_std_y[shot_index]
-        ix = (np.searchsorted(edges, x_norm, side="right") - 1).astype(np.int16)
-        iy = (np.searchsorted(edges, y_norm, side="right") - 1).astype(np.int16)
-        inside = (ix >= 0) & (ix < bins) & (iy >= 0) & (iy < bins)
-        flat_pixel = (ix[inside] * bins + iy[inside]).astype(np.int32)
-        flat_shot_pixel = shot_index[inside].astype(np.int64) * n_pixels + flat_pixel
-        inside_states = states[inside]
-
-        ground = np.bincount(
-            flat_shot_pixel[~inside_states], minlength=n_shots * n_pixels
-        ).reshape(n_shots, bins, bins)
-        excited = np.bincount(
-            flat_shot_pixel[inside_states], minlength=n_shots * n_pixels
-        ).reshape(n_shots, bins, bins)
-        if max(ground.max(initial=0), excited.max(initial=0)) > np.iinfo(np.uint32).max:
-            raise OverflowError(f"Pixel count exceeds uint32 range in {path}")
-
-        s = states.astype(np.float32)
-        mean_state = _bincount_by_shot(shot_index, s, n_shots) / counts
-        cov_x_state = _bincount_by_shot(shot_index, x * s, n_shots) / counts - mean_x * mean_state
-        cov_y_state = _bincount_by_shot(shot_index, y * s, n_shots) / counts - mean_y * mean_state
-        cov_x2_state = (
-            _bincount_by_shot(shot_index, x * x * s, n_shots) / counts
-            - (var_x + mean_x**2) * mean_state
-        )
-        cov_y2_state = (
-            _bincount_by_shot(shot_index, y * y * s, n_shots) / counts
-            - (var_y + mean_y**2) * mean_state
-        )
-
-        exc_counts = np.maximum(_bincount_by_shot(shot_index, s, n_shots), 1)
-        mean_x_exc = _bincount_by_shot(shot_index, x * s, n_shots) / exc_counts
-        mean_y_exc = _bincount_by_shot(shot_index, y * s, n_shots) / exc_counts
-
-        summaries = np.column_stack([
-            mean_x, mean_y, std_x, std_y, cov_xy,
-            cov_x_state, cov_y_state, cov_x2_state, cov_y2_state,
-            mean_x_exc, mean_y_exc,
-        ])
+        imgs_s0 = handle["images_s0"][:].astype(np.float64)   # (n_shots, res, res)
+        imgs_s1 = handle["images_s1"][:].astype(np.float64)
+        half_range = float(handle.attrs["image_half_range"])
+        n_shots = imgs_s0.shape[0]
         metadata = {key: handle[key][:] for key in METADATA_KEYS}
+
+    res = imgs_s0.shape[1]
+    img_edges = np.linspace(-half_range, half_range, res + 1)
+    pc = 0.5 * (img_edges[:-1] + img_edges[1:])   # (res,) physical pixel centers
+
+    total = imgs_s0 + imgs_s1                          # (n_shots, res, res)
+    counts = total.sum(axis=(1, 2))                    # (n_shots,)
+    safe_counts = np.where(counts > 0, counts, 1.0)
+
+    # Position moments via pixel-weighted sums (pc first axis = x, second = y)
+    pc2 = pc ** 2
+    mean_x  = (total * pc[None, :, None]).sum(axis=(1, 2)) / safe_counts
+    mean_y  = (total * pc[None, None, :]).sum(axis=(1, 2)) / safe_counts
+    mean_x2 = (total * pc2[None, :, None]).sum(axis=(1, 2)) / safe_counts
+    mean_y2 = (total * pc2[None, None, :]).sum(axis=(1, 2)) / safe_counts
+    var_x   = mean_x2 - mean_x ** 2
+    var_y   = mean_y2 - mean_y ** 2
+    std_x   = np.sqrt(np.maximum(var_x, 0))
+    std_y   = np.sqrt(np.maximum(var_y, 0))
+    cov_xy  = ((total * pc[None, :, None] * pc[None, None, :]).sum(axis=(1, 2))
+               / safe_counts - mean_x * mean_y)
+
+    # Contrast (state) moments
+    n1 = imgs_s1
+    exc_total = n1.sum(axis=(1, 2))
+    mean_state = exc_total / safe_counts
+    safe_exc   = np.where(exc_total > 0, exc_total, 1.0)
+
+    cov_x_state  = (n1 * pc[None, :, None]).sum(axis=(1, 2)) / safe_counts - mean_x * mean_state
+    cov_y_state  = (n1 * pc[None, None, :]).sum(axis=(1, 2)) / safe_counts - mean_y * mean_state
+    cov_x2_state = ((n1 * pc2[None, :, None]).sum(axis=(1, 2)) / safe_counts
+                    - (var_x + mean_x ** 2) * mean_state)
+    cov_y2_state = ((n1 * pc2[None, None, :]).sum(axis=(1, 2)) / safe_counts
+                    - (var_y + mean_y ** 2) * mean_state)
+    mean_x_exc   = (n1 * pc[None, :, None]).sum(axis=(1, 2)) / safe_exc
+    mean_y_exc   = (n1 * pc[None, None, :]).sum(axis=(1, 2)) / safe_exc
+
+    summaries = np.column_stack([
+        mean_x, mean_y, std_x, std_y, cov_xy,
+        cov_x_state, cov_y_state, cov_x2_state, cov_y2_state,
+        mean_x_exc, mean_y_exc,
+    ])
+
+    # Cloud-normalized count maps: scatter each image pixel into the target grid
+    safe_std_x = np.where(std_x > 0, std_x, 1.0)
+    safe_std_y = np.where(std_y > 0, std_y, 1.0)
+    u  = (pc[None, :] - mean_x[:, None]) / safe_std_x[:, None]  # (n_shots, res)
+    v  = (pc[None, :] - mean_y[:, None]) / safe_std_y[:, None]
+    bu = np.floor((u - xy_min) / bin_width).astype(np.int32)     # (n_shots, res)
+    bv = np.floor((v - xy_min) / bin_width).astype(np.int32)
+
+    ground_out  = np.zeros((n_shots, bins, bins), dtype=np.uint32)
+    excited_out = np.zeros((n_shots, bins, bins), dtype=np.uint32)
+
+    for j in range(n_shots):
+        ix_v = np.where((bu[j] >= 0) & (bu[j] < bins))[0]
+        iy_v = np.where((bv[j] >= 0) & (bv[j] < bins))[0]
+        if ix_v.size == 0 or iy_v.size == 0:
+            continue
+        flat_bins = (bu[j][ix_v, None] * bins + bv[j][None, iy_v]).ravel()
+        w_g = imgs_s0[j][np.ix_(ix_v, iy_v)].ravel()
+        w_e = imgs_s1[j][np.ix_(ix_v, iy_v)].ravel()
+        ground_out[j]  = np.bincount(flat_bins, weights=w_g, minlength=n_pixels).reshape(bins, bins).astype(np.uint32)
+        excited_out[j] = np.bincount(flat_bins, weights=w_e, minlength=n_pixels).reshape(bins, bins).astype(np.uint32)
 
     return {
         "path": str(path.resolve()),
         "run_id": path.parents[1].name,
         "n_shots": n_shots,
-        "n_atoms": len(shot_index),
-        "ground": ground.astype(np.uint32),
-        "excited": excited.astype(np.uint32),
+        "n_atoms": int(total.sum()),
+        "ground": ground_out,
+        "excited": excited_out,
         "summaries": summaries,
         "metadata": metadata,
         "seconds": time.perf_counter() - started,

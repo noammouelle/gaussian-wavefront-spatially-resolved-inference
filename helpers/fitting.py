@@ -609,8 +609,8 @@ def fit_from_datasets(Z0, Z100, f: float, use_gpu: bool = True,
 
     Parameters
     ----------
-    Z0, Z100 : LazyShotDataset  (or any object with a .state_counts() method
-                                 returning a DataFrame with columns 0 and 1)
+    Z0, Z100 : ImageShotDataset  (or any object with a .state_counts() method
+                                  returning a DataFrame with columns 0 and 1)
     f : float
         Signal frequency [cycles per time unit].
     use_gpu : bool
@@ -624,10 +624,10 @@ def fit_from_datasets(Z0, Z100, f: float, use_gpu: bool = True,
 
     Example
     -------
-    >>> from helpers import LazyShotDataset
+    >>> from helpers import ImageShotDataset
     >>> from fitting import fit_from_datasets
-    >>> Z0  = LazyShotDataset('data/run_000/Z0/data_PROB.h5')
-    >>> Z100 = LazyShotDataset('data/run_000/Z100/data_PROB.h5')
+    >>> Z0  = ImageShotDataset('data/run_000/Z0/data_IMG.h5')
+    >>> Z100 = ImageShotDataset('data/run_000/Z100/data_IMG.h5')
     >>> r = fit_from_datasets(Z0, Z100, f=0.3)
     >>> print(r.amp, r.phase)
     """

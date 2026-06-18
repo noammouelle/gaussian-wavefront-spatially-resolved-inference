@@ -20,12 +20,28 @@ def make_run(path, run_id, seed):
     y = rng.normal(0, 8e-4, len(shot_index))
     states = rng.binomial(1, 0.5 + 0.15 * np.cos(1500 * x + 2e6 * (x * x + y * y)))
 
-    run_path = path / run_id / "Z0" / "data_PROB.h5"
+    half_range = 4e-3   # 5× std — captures >99.9% of atoms
+    res = 16
+    edges = np.linspace(-half_range, half_range, res + 1)
+    imgs_s0 = np.zeros((n_shots, res, res), dtype=np.uint16)
+    imgs_s1 = np.zeros((n_shots, res, res), dtype=np.uint16)
+    for j in range(n_shots):
+        mask = shot_index == j
+        xj, yj, sj = x[mask], y[mask], states[mask]
+        h0, _, _ = np.histogram2d(xj[sj == 0], yj[sj == 0], bins=edges)
+        h1, _, _ = np.histogram2d(xj[sj == 1], yj[sj == 1], bins=edges)
+        imgs_s0[j] = h0.astype(np.uint16)
+        imgs_s1[j] = h1.astype(np.uint16)
+
+    run_path = path / run_id / "Z0" / "data_IMG.h5"
     run_path.parent.mkdir(parents=True)
     with h5py.File(run_path, "w") as handle:
-        handle.create_dataset("positions", data=np.column_stack([x, y, np.zeros_like(x)]))
-        handle.create_dataset("states", data=states)
-        handle.create_dataset("shot_index", data=shot_index)
+        handle.attrs["image_half_range"] = half_range
+        handle.attrs["image_res"] = res
+        handle.attrs["z0_m"] = 0.0
+        handle.attrs["n_atoms_launched"] = n_shots * n_per_shot
+        handle.create_dataset("images_s0", data=imgs_s0)
+        handle.create_dataset("images_s1", data=imgs_s1)
         handle.create_dataset("phi0", data=np.linspace(0, 1, n_shots))
         for key in ("mu_x0", "mu_y0", "mu_vx0", "mu_vy0"):
             handle.create_dataset(key, data=rng.normal(size=n_shots))

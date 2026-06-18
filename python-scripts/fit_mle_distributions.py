@@ -51,7 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "helpers"))
 
 from fitting import fit_feature_conditioned_from_datasets, fit_from_datasets  # noqa: E402
-from helpers import LazyShotDataset  # noqa: E402
+from helpers import ImageShotDataset  # noqa: E402
 
 
 DEFAULT_RUN_NAME = (
@@ -421,20 +421,20 @@ def main():
     for run_idx in range(start, run_stop):
         run_start = time.perf_counter()
         run_dir = run_name / f"run_{run_idx:03d}"
-        z0_path = run_dir / "Z0" / "data_PROB.h5"
-        z100_path = run_dir / "Z100" / "data_PROB.h5"
+        z0_path = run_dir / "Z0" / "data_IMG.h5"
+        z100_path = run_dir / "Z100" / "data_IMG.h5"
         if not z0_path.is_file() or not z100_path.is_file():
             raise FileNotFoundError(
                 f"Missing input for run {run_idx}: {z0_path} or {z100_path}"
             )
 
         logging.info("[%d/%d] Loading run_%03d", run_idx + 1, run_stop, run_idx)
-        z0 = LazyShotDataset(z0_path)
-        z100 = LazyShotDataset(z100_path)
+        z0 = ImageShotDataset(z0_path)
+        z100 = ImageShotDataset(z100_path)
         logging.debug(
-            "run_%03d: Z0=%d shots/%d atoms; Z100=%d shots/%d atoms",
-            run_idx, z0.n_shots, z0.n_atoms_total,
-            z100.n_shots, z100.n_atoms_total,
+            "run_%03d: Z0=%d shots/%d atoms launched; Z100=%d shots/%d atoms launched",
+            run_idx, z0.n_shots, z0.n_atoms_launched,
+            z100.n_shots, z100.n_atoms_launched,
         )
 
         if feature_artifacts is None:
