@@ -81,6 +81,18 @@ class FitResult:
     ntheta: int
     f: float
     converged: bool
+    optimizer_status: int = -1
+    optimizer_message: str = ""
+    optimizer_nit: int = 0
+    optimizer_nfev: int = 0
+    optimizer_objective: float = np.nan
+    selected_fine_start: int = -1
+    fine_start_success: tuple = ()
+    fine_start_status: tuple = ()
+    fine_start_messages: tuple = ()
+    fine_start_nit: tuple = ()
+    fine_start_nfev: tuple = ()
+    fine_start_objectives: tuple = ()
     feature_names: tuple = ()
     feature_names_z0: tuple = ()
     feature_names_z100: tuple = ()
@@ -331,6 +343,7 @@ def fit_feature_conditioned_mle(
     feature_names_z0=(),
     feature_names_z100=(),
     feature_names=(),
+    feature_names_phase=None,
     feature_nuisance=None,
     beta_phi_prior_std: float = 0.3,
     beta_A_prior_std: float = 0.03,
@@ -346,7 +359,7 @@ def fit_feature_conditioned_mle(
     With standardized selected features s0_i from Z0 and s100_i from Z100,
     the enabled nuisance blocks are
 
-        phase:    dpsi_i = beta_phi @ [s0_i, s100_i]
+        phase:    dpsi_i = beta_phi @ sphase_i
         offset:   A1_i = A1 + beta_A1 @ s0_i
                   A2_i = A2 + beta_A2 @ s100_i
         contrast: C1_i = C1 * exp(beta_C1 @ s0_i)
@@ -394,7 +407,7 @@ def fit_feature_conditioned_mle(
 
     n_params = 7 + sum(n for _name, n, _prior_std in active_blocks)
     maxiter_coarse = max(maxiter_coarse, (250 if fast else 400) * n_params)
-    maxiter_fine = max(maxiter_fine, (400 if fast else 650) * n_params)
+    maxiter_fine = max(maxiter_fine, (400 if fast else 1200) * n_params)
 
     def zero_betas():
         return {
@@ -493,6 +506,7 @@ def fit_feature_conditioned_mle(
         perturbations.append(dp)
 
     best_fine = None
+    fine_results = []
     for dp in perturbations:
         start = x0_fine + dp
         start[5] = max(start[5], 0.0)
@@ -502,8 +516,10 @@ def fit_feature_conditioned_mle(
             method='Nelder-Mead',
             options={'maxiter': maxiter_fine, 'xatol': xatol_fine, 'fatol': fatol_fine},
         )
+        fine_results.append(r)
         if best_fine is None or r.fun < best_fine.fun:
             best_fine = r
+    selected_fine_start = min(range(len(fine_results)), key=lambda index: fine_results[index].fun)
 
     base, beta = split(best_fine.x)
     A1, A2, C1, C2, phi0, As, Ac = base
@@ -513,9 +529,16 @@ def fit_feature_conditioned_mle(
     phase = float(np.arctan2(Ac, As))
 
     feature_names = tuple(feature_names) if feature_names else tuple(feature_names_z100)
-    feature_names_phase = tuple(f"Z0:{name}" for name in feature_names_z0) + tuple(
-        f"Z100:{name}" for name in feature_names_z100
-    )
+    if feature_names_phase is None:
+        feature_names_phase = tuple(f"Z0:{name}" for name in feature_names_z0) + tuple(
+            f"Z100:{name}" for name in feature_names_z100
+        )
+    else:
+        feature_names_phase = tuple(feature_names_phase)
+    if len(feature_names_phase) != nfeat_phase:
+        raise ValueError(
+            f"feature_names_phase has {len(feature_names_phase)} entries, expected {nfeat_phase}"
+        )
     return FitResult(
         A1=float(A1), A2=float(A2), C1=float(C1), C2=float(C2),
         phi0=float(phi0), As=float(As), Ac=float(Ac),
@@ -524,6 +547,18 @@ def fit_feature_conditioned_mle(
         ntheta=ev.ntheta,
         f=float(f),
         converged=bool(best_fine.success),
+        optimizer_status=int(best_fine.status),
+        optimizer_message=str(best_fine.message),
+        optimizer_nit=int(best_fine.nit),
+        optimizer_nfev=int(best_fine.nfev),
+        optimizer_objective=float(best_fine.fun),
+        selected_fine_start=int(selected_fine_start),
+        fine_start_success=tuple(bool(r.success) for r in fine_results),
+        fine_start_status=tuple(int(r.status) for r in fine_results),
+        fine_start_messages=tuple(str(r.message) for r in fine_results),
+        fine_start_nit=tuple(int(r.nit) for r in fine_results),
+        fine_start_nfev=tuple(int(r.nfev) for r in fine_results),
+        fine_start_objectives=tuple(float(r.fun) for r in fine_results),
         feature_names=feature_names,
         feature_names_z0=tuple(feature_names_z0),
         feature_names_z100=tuple(feature_names_z100),
@@ -551,6 +586,7 @@ def fit_feature_conditioned_from_datasets(
     feature_names_z0=(),
     feature_names_z100=(),
     feature_names=(),
+    feature_names_phase=None,
     feature_nuisance=None,
     use_gpu: bool = True,
     ntheta: int = None,
@@ -561,6 +597,9 @@ def fit_feature_conditioned_from_datasets(
     feature_scale_z0=None,
     feature_mean_z100=None,
     feature_scale_z100=None,
+    features_phase=None,
+    feature_mean_phase=None,
+    feature_scale_phase=None,
     **kwargs,
 ) -> FitResult:
     """Build a FeatureConditionedLikelihoodEvaluator from datasets and fit."""
@@ -585,6 +624,9 @@ def fit_feature_conditioned_from_datasets(
         feature_scale_z0=feature_scale_z0,
         feature_mean_z100=feature_mean_z100,
         feature_scale_z100=feature_scale_z100,
+        features_phase=features_phase,
+        feature_mean_phase=feature_mean_phase,
+        feature_scale_phase=feature_scale_phase,
     )
     return fit_feature_conditioned_mle(
         ev,
@@ -592,6 +634,7 @@ def fit_feature_conditioned_from_datasets(
         feature_names_z0=feature_names_z0,
         feature_names_z100=feature_names_z100,
         feature_names=feature_names,
+        feature_names_phase=feature_names_phase,
         feature_nuisance=feature_nuisance,
         beta_phi_prior_std=beta_phi_prior_std,
         beta_A_prior_std=beta_A_prior_std,

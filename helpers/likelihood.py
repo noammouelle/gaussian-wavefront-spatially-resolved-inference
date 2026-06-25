@@ -220,7 +220,7 @@ class FeatureConditionedLikelihoodEvaluator(LikelihoodEvaluator):
 
     with optional feature channels
 
-        dpsi_i = beta_phi @ [s0_i, s100_i]
+        dpsi_i = beta_phi @ sphase_i
         A0_i   = A0 + beta_A0 @ s0_i
         A1_i   = A1 + beta_A1 @ s100_i
         C0_i   = C0 * exp(beta_C0 @ s0_i)
@@ -228,7 +228,9 @@ class FeatureConditionedLikelihoodEvaluator(LikelihoodEvaluator):
 
     The Z0 phase nuisance is absorbed into the marginalized common theta_i
     gauge, so the fitted phase correction is differential and can use both
-    sites' selected features.  Offset and contrast corrections are local:
+    sites' selected features.  By default sphase_i is [s0_i, s100_i], but a
+    separate phase design matrix can be supplied for polynomial phase fits.
+    Offset and contrast corrections are local:
     Z0 image summaries never correct Z100 offset/contrast, and vice versa.
     """
 
@@ -247,6 +249,9 @@ class FeatureConditionedLikelihoodEvaluator(LikelihoodEvaluator):
         feature_scale_z0=None,
         feature_mean_z100=None,
         feature_scale_z100=None,
+        features_phase=None,
+        feature_mean_phase=None,
+        feature_scale_phase=None,
     ):
         super().__init__(n1, n2, N1, N2, t=t, use_gpu=use_gpu, ntheta=ntheta)
 
@@ -269,12 +274,26 @@ class FeatureConditionedLikelihoodEvaluator(LikelihoodEvaluator):
         self.feature_scale_z100 = scale_z100.copy()
         self.standardized_features_z0_np = z0.copy()
         self.standardized_features_z100_np = z100.copy()
+        if features_phase is None:
+            phase = np.concatenate([z0, z100], axis=1)
+            mean_phase = np.zeros(phase.shape[1], dtype=float)
+            scale_phase = np.ones(phase.shape[1], dtype=float)
+        else:
+            phase, mean_phase, scale_phase = self._standardize_features(
+                features_phase, feature_mean_phase, feature_scale_phase, "features_phase"
+            )
+            if phase.shape[0] != self.n_shots:
+                raise ValueError(f"features_phase has {phase.shape[0]} rows but likelihood has {self.n_shots} shots")
+
         self.n_features_z0 = z0.shape[1]
         self.n_features_z100 = z100.shape[1]
-        self.n_features_phase = self.n_features_z0 + self.n_features_z100
+        self.n_features_phase = phase.shape[1]
+        self.features_phase_np = np.asarray(features_phase if features_phase is not None else phase, dtype=float).copy()
+        self.feature_mean_phase = mean_phase.copy()
+        self.feature_scale_phase = scale_phase.copy()
         self._features_z0 = self.xp.asarray(z0, dtype=self.xp.float64)
         self._features_z100 = self.xp.asarray(z100, dtype=self.xp.float64)
-        self._features_phase = self.xp.concatenate([self._features_z0, self._features_z100], axis=1)
+        self._features_phase = self.xp.asarray(phase, dtype=self.xp.float64)
 
     @staticmethod
     def _standardize_features(features, feature_mean, feature_scale, name):

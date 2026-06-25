@@ -93,6 +93,10 @@ Fit Z100 PCA scores:
 Skip this step if you only use scalar summary features such as `mean_x`, `std_x`,
 or `cov_x_state`.
 
+The fitter also accepts the derived scalar features `var_x=std_x**2` and
+`var_y=std_y**2`. They are squared before global standardization and reuse the
+existing feature artifacts.
+
 ### 4. Fit the count-only baseline
 
     python python-scripts/fit_mle_distributions.py "$DATA_ROOT" \
@@ -129,10 +133,10 @@ Phase-only first pass:
       --frequency 0.3 \
       --feature-dir-z0 results/2d-shot-features-z0 \
       --feature-dir-z100 results/2d-shot-features-z100 \
-      --features-z0 mean_x std_x \
-      --features-z100 mean_x std_x \
+      --features-z0 mean_x var_x mean_y var_y \
+      --features-z100 mean_x var_x mean_y var_y \
       --feature-nuisance phase \
-      --output results/mle_feature_phase.pkl
+      --output results/mle_feature_phase_variance.pkl
 
 Full phase + offset + contrast model:
 

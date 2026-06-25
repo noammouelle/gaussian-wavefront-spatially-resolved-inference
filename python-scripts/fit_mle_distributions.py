@@ -37,6 +37,7 @@ the enabled blocks, e.g. "--feature-nuisance phase" for the first minimal model.
 import argparse
 from dataclasses import asdict
 import logging
+from itertools import combinations_with_replacement
 import os
 from pathlib import Path
 import re
@@ -64,6 +65,10 @@ DEFAULT_RUN_NAME = (
 RESULT_COLUMNS = [
     "A1", "A2", "C1", "C2", "phi0", "As", "Ac", "amp", "phase",
     "logL", "ntheta", "f", "converged",
+    "optimizer_status", "optimizer_message", "optimizer_nit", "optimizer_nfev",
+    "optimizer_objective", "selected_fine_start",
+    "fine_start_success", "fine_start_status", "fine_start_messages",
+    "fine_start_nit", "fine_start_nfev", "fine_start_objectives",
     "feature_names", "feature_names_z0", "feature_names_z100", "feature_names_phase", "feature_nuisance",
     "beta_phi", "beta_A1", "beta_A2", "beta_C1", "beta_C2",
     "beta_phi_prior_std", "beta_A_prior_std", "beta_C_prior_std",
@@ -167,6 +172,16 @@ def parse_args():
     parser.add_argument("--pca-path-z0", type=Path, help="Z0 PCA artifact path. Defaults to <feature-dir-z0>/2d-shot-pcas.npz.")
     parser.add_argument("--pca-path-z100", type=Path, help="Z100 PCA artifact path. Defaults to <feature-dir-z100>/2d-shot-pcas.npz.")
     parser.add_argument(
+        "--phase-feature-degree",
+        type=int,
+        default=1,
+        help=(
+            "Polynomial degree for the differential phase feature design. "
+            "Degree 1 keeps beta_phi @ [s0_i, s100_i]; degree 2 fits "
+            "linear, squared, and interaction terms with no bias column."
+        ),
+    )
+    parser.add_argument(
         "--beta-phi-prior-std",
         type=float,
         default=0.3,
@@ -262,15 +277,24 @@ def load_feature_artifacts(feature_dir, selected_features, n_pcs, pca_path=None)
             raise ValueError("Use either all-summary or explicit summary names, not both")
         requested = summary_names
 
+    derived_summary_features = {
+        "var_x": "std_x",
+        "var_y": "std_y",
+    }
     columns = []
     names = []
     for name in requested:
-        if name not in summary_names:
+        source_name = derived_summary_features.get(name, name)
+        if source_name not in summary_names:
+            available = summary_names + list(derived_summary_features)
             raise ValueError(
-                f"Unknown summary feature {name!r}. Available: {', '.join(summary_names)}"
+                f"Unknown summary feature {name!r}. Available: {', '.join(available)}"
             )
-        index = summary_names.index(name)
-        columns.append(summary_features[:, index])
+        index = summary_names.index(source_name)
+        column = summary_features[:, index]
+        if name in derived_summary_features:
+            column = np.square(column)
+        columns.append(column)
         names.append(name)
 
     if n_pcs:
@@ -338,6 +362,52 @@ def select_run_features(feature_artifacts, run_idx, n_shots):
     return feature_artifacts["features"][mask][order]
 
 
+def standardized_artifact_features(feature_artifacts):
+    return (feature_artifacts["features"] - feature_artifacts["feature_mean"]) / feature_artifacts["feature_scale"]
+
+
+def build_phase_feature_artifact(feature_artifacts, degree):
+    """Build an optional polynomial design matrix for beta_phi."""
+    if degree < 1:
+        raise ValueError("--phase-feature-degree must be at least 1")
+    if degree == 1:
+        return None
+
+    z0 = feature_artifacts["z0"]
+    z100 = feature_artifacts["z100"]
+    if not (np.array_equal(z0["run_id"], z100["run_id"]) and np.array_equal(z0["shot_id"], z100["shot_id"])):
+        raise ValueError("Z0 and Z100 feature artifacts must have matching row order for polynomial phase features")
+
+    base_names = tuple(f"Z0:{name}" for name in z0["feature_names"]) + tuple(
+        f"Z100:{name}" for name in z100["feature_names"]
+    )
+    base_features = np.column_stack([
+        standardized_artifact_features(z0),
+        standardized_artifact_features(z100),
+    ])
+
+    columns = []
+    feature_names = []
+    for term_degree in range(1, degree + 1):
+        for indices in combinations_with_replacement(range(base_features.shape[1]), term_degree):
+            columns.append(np.prod(base_features[:, indices], axis=1))
+            feature_names.append("*".join(base_names[index] for index in indices))
+    features = np.column_stack(columns)
+    feature_names = tuple(feature_names)
+    feature_mean = features.mean(axis=0)
+    feature_scale = features.std(axis=0)
+    feature_scale = np.where(feature_scale > 0, feature_scale, 1.0)
+    return {
+        "run_id": z0["run_id"],
+        "shot_id": z0["shot_id"],
+        "features": features,
+        "feature_names": feature_names,
+        "feature_mean": feature_mean,
+        "feature_scale": feature_scale,
+        "degree": degree,
+    }
+
+
 def main():
     args = parse_args()
     run_name = args.run_name.expanduser().resolve()
@@ -370,15 +440,25 @@ def main():
             f"{args.run_start} and {run_stop}"
         )
 
+    if args.phase_feature_degree < 1:
+        raise ValueError("--phase-feature-degree must be at least 1")
+
     feature_artifacts = None
+    phase_feature_artifact = None
     site_feature_args = resolve_site_feature_args(args)
     if site_feature_args is not None:
         feature_artifacts = {
             site: load_feature_artifacts(*site_args)
             for site, site_args in site_feature_args.items()
         }
+        phase_feature_artifact = build_phase_feature_artifact(feature_artifacts, args.phase_feature_degree)
         logging.info("Z0 feature-conditioned likelihood features: %s", ", ".join(feature_artifacts["z0"]["feature_names"]))
         logging.info("Z100 feature-conditioned likelihood features: %s", ", ".join(feature_artifacts["z100"]["feature_names"]))
+        if phase_feature_artifact is not None:
+            logging.info(
+                "Phase feature polynomial degree: %d (%d beta_phi coefficients)",
+                args.phase_feature_degree, len(phase_feature_artifact["feature_names"]),
+            )
         logging.info("Feature nuisance blocks: %s", ", ".join(args.feature_nuisance))
         logging.info(
             "beta prior stds: phi=%.6g rad, A=%.6g probability, C=%.6g log-contrast",
@@ -395,15 +475,23 @@ def main():
                 "feature_names", "feature_names_z0", "feature_names_z100",
                 "feature_names_phase", "feature_nuisance", "beta_phi", "beta_A1",
                 "beta_A2", "beta_C1", "beta_C2",
+                "fine_start_success", "fine_start_status", "fine_start_messages",
+                "fine_start_nit", "fine_start_nfev", "fine_start_objectives",
             }:
                 existing[column] = [tuple() for _ in range(len(existing))]
             elif column in {
                 "beta_phi_prior_std", "beta_A_prior_std", "beta_C_prior_std",
-                "log_posterior",
+                "log_posterior", "optimizer_objective",
             }:
                 existing[column] = np.nan
             elif column == "beta_penalty":
                 existing[column] = 0.0
+            elif column == "optimizer_message":
+                existing[column] = ""
+            elif column in {"optimizer_nit", "optimizer_nfev"}:
+                existing[column] = 0
+            elif column in {"optimizer_status", "selected_fine_start"}:
+                existing[column] = -1
             else:
                 raise ValueError(f"Cannot resume; output is missing column: {column}")
         rows = existing[RESULT_COLUMNS].to_dict("records")
@@ -449,6 +537,15 @@ def main():
         else:
             features_z0 = select_run_features(feature_artifacts["z0"], run_idx, z0.n_shots)
             features_z100 = select_run_features(feature_artifacts["z100"], run_idx, z100.n_shots)
+            features_phase = None
+            feature_names_phase = None
+            feature_mean_phase = None
+            feature_scale_phase = None
+            if phase_feature_artifact is not None:
+                features_phase = select_run_features(phase_feature_artifact, run_idx, z0.n_shots)
+                feature_names_phase = phase_feature_artifact["feature_names"]
+                feature_mean_phase = phase_feature_artifact["feature_mean"]
+                feature_scale_phase = phase_feature_artifact["feature_scale"]
             result = fit_feature_conditioned_from_datasets(
                 z0,
                 z100,
@@ -457,6 +554,7 @@ def main():
                 f=args.frequency,
                 feature_names_z0=feature_artifacts["z0"]["feature_names"],
                 feature_names_z100=feature_artifacts["z100"]["feature_names"],
+                feature_names_phase=feature_names_phase,
                 use_gpu=not args.cpu,
                 ntheta=args.ntheta,
                 feature_nuisance=args.feature_nuisance,
@@ -467,6 +565,9 @@ def main():
                 feature_scale_z0=feature_artifacts["z0"]["feature_scale"],
                 feature_mean_z100=feature_artifacts["z100"]["feature_mean"],
                 feature_scale_z100=feature_artifacts["z100"]["feature_scale"],
+                features_phase=features_phase,
+                feature_mean_phase=feature_mean_phase,
+                feature_scale_phase=feature_scale_phase,
                 fast=args.fast,
             )
         rows.append(asdict(result))
@@ -475,9 +576,12 @@ def main():
         elapsed = time.perf_counter() - run_start
         logging.info(
             "[%d/%d] run_%03d complete in %.1fs | amp=%.8g phase=%.8g "
-            "logL=%.8g ntheta=%d converged=%s",
+            "logL=%.8g ntheta=%d converged=%s | status=%d nit=%d nfev=%d "
+            "fine_start=%d message=%s",
             run_idx + 1, run_stop, run_idx, elapsed, result.amp, result.phase,
             result.logL, result.ntheta, result.converged,
+            result.optimizer_status, result.optimizer_nit, result.optimizer_nfev,
+            result.selected_fine_start, result.optimizer_message,
         )
 
     elapsed = time.perf_counter() - job_start
