@@ -1,0 +1,581 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{parskip}
+
+\geometry{margin=2.5cm}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Lcal}{\mathcal{L}}
+\newcommand{\q}{\mathbf{q}}
+\newcommand{\x}{\mathbf{x}}
+\newcommand{\R}{\mathbb{R}}
+
+\title{%
+  Position-Resolved Likelihood Inference\\
+  for Atom Gradiometer Image Data%
+}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+%%============================================================
+\section{Setup and Notation}
+%%============================================================
+
+\subsection{Gradiometer Architecture}
+
+We consider an atom gradiometer composed of two atom interferometers (AIs)
+operated simultaneously, one with atoms sourced at height $z = 0$\,m and one at
+$z = 100$\,m, indexed hereafter by $z \in \mathcal{Z} = \{0,\,100\}$.
+Each AI independently measures the accumulated phase along its atom trajectories.
+Common-mode laser-phase noise cancels in the differential signal, while a
+spatially-dependent differential phase (e.g.\ from a gravitational wave or
+dark-matter field) is retained.
+
+A run consists of $N_\mathrm{shots}$ shots indexed $i = 1,\ldots,N_\mathrm{shots}$,
+acquired at times $t_i$.  Each shot produces two 2D fluorescence images per AI:
+one for ground-state atoms ($s = g$, bright port) and one for excited-state atoms
+($s = e$, dark port).  Images share a common pixel grid with bin centres
+$\x_b = (x_b, y_b)$, bin area $\Delta A = \Delta x\,\Delta y$, and
+$N_b$ bins total.
+
+\subsection{Parameters}
+
+\paragraph{Science signal.}
+The target quantity is the differential phase signal injected into AI $z=100$:
+\begin{equation}
+  \delta\phi_i(\beta)
+  = A_s \sin(2\pi f\,t_i) + A_c \cos(2\pi f\,t_i),
+  \qquad \beta = (A_s,\,A_c),
+  \label{eq:signal}
+\end{equation}
+where the signal frequency $f$ is assumed known a priori, leaving two free
+parameters.  The signal amplitude and phase are
+$A = \sqrt{A_s^2 + A_c^2}$ and $\varphi = \arctan2(A_c, A_s)$.
+
+\paragraph{Common laser phase.}
+The common laser phase $\phi_i \sim \mathrm{Uniform}(0, 2\pi)$ is shared by
+both AIs within each shot, drawn independently across shots, and unobserved.
+It is a latent variable; how we handle it in the likelihood is discussed in
+Section~\ref{sec:nuisances}.
+
+\paragraph{Effective AI phase.}
+The total phase entering the transition probability for AI $z$ in shot $i$ is
+\begin{equation}
+  \Phi_{iz}(\phi_i,\beta)
+  = \phi_i + \psi_z\!\bigl(\delta\phi_i(\beta)\bigr),
+  \qquad
+  \psi_0 = 0,\quad \psi_{100} = \delta\phi_i(\beta).
+  \label{eq:eff_phase}
+\end{equation}
+
+\paragraph{Cloud nuisance parameters.}
+The initial atomic cloud for AI $z$ in shot $i$ is characterised by a
+Gaussian phase-space distribution with parameters
+\begin{equation}
+  \eta_{iz}
+  =
+  \bigl(
+    \mu_{x_0},\,\mu_{y_0},\,\mu_{v_x},\,\mu_{v_y},\,
+    \sigma_x,\,\sigma_y,\,\sigma_{v_x},\,\sigma_{v_y}
+  \bigr)_{iz},
+\end{equation}
+the transverse centre-of-mass (COM) positions, COM velocities, and Gaussian
+widths.  These vary shot-to-shot and across AIs.  Like $\phi_i$, they are
+unobserved and must be handled carefully in the likelihood; see
+Section~\ref{sec:nuisances}.
+
+%%============================================================
+\section{Semiclassical Phase-Space Map (PSMAP)}
+%%============================================================
+
+\subsection{PSMAP Surrogate}
+
+The semiclassical simulation (ais++) integrates the interferometer sequence for a
+regular 4D grid of initial transverse phase-space coordinates
+$\q_0 = (x_0, y_0, v_{x0}, v_{y0})$ at fixed source height and longitudinal
+velocity.  For each grid point and each output port $p$ it stores:
+(i) wavepacket path amplitudes $a_{0,p}(\q_0)$ and $a_{1,p}(\q_0)$;
+(ii) accumulated phase difference $\Delta\phi_p(\q_0)$;
+(iii) interference flag $\iota_p \in \{0,1\}$; and
+(iv) output state label $s_p \in \{g,e\}$.
+At runtime, values are obtained by quadrilinear interpolation on the
+$21^4$ grid (\texttt{PSMAPSurrogate}).
+A separate PSMAP is computed for each AI.
+
+\subsection{Transition Probabilities}
+
+The probability that an atom with initial condition $\q_0$ is detected at port
+$p$ given total AI phase $\Phi$ is
+\begin{equation}
+  P_p(\q_0;\,\Phi)
+  = a_{0,p}^2 + a_{1,p}^2
+    + \iota_p \cdot 2\,a_{0,p}\,a_{1,p}\,
+      \cos\!\bigl(\Delta\phi_p(\q_0) + \Phi\bigr).
+  \label{eq:port_prob}
+\end{equation}
+The per-state probabilities are obtained by summing over ports with matching state
+label:
+\begin{equation}
+  p_s(\q_0;\,\Phi)
+  = \sum_{p:\,s_p = s} P_p(\q_0;\,\Phi),
+  \qquad s \in \{g, e\}.
+  \label{eq:state_prob}
+\end{equation}
+Because the simulation retains only the two dominant interferometry paths,
+\begin{equation}
+  p_g(\q_0;\,\Phi) + p_e(\q_0;\,\Phi) \leq 1;
+  \label{eq:pruning}
+\end{equation}
+atoms not accounted for are lost to pruned paths.  In particular,
+$p_e \neq 1 - p_g$ in general; both are computed independently.
+
+\subsection{Ballistic Trajectory Map}
+
+Under free-flight propagation over detection time $T_\mathrm{det}$,
+the final transverse position is
+\begin{equation}
+  \x^f(\q_0)
+  =
+  \begin{pmatrix}
+    x_0 + T_\mathrm{det}\,v_{x0} \\
+    y_0 + T_\mathrm{det}\,v_{y0}
+  \end{pmatrix}.
+  \label{eq:ballistic}
+\end{equation}
+Both output states follow the same trajectory (no state-dependent force before
+imaging).  With default parameters ($T_\mathrm{det} = 3.8$\,s,
+$\sigma_x = 100\,\mu$m, $\sigma_{v_x} = 309\,\mu$m/s), the cloud expands to
+$\sigma_{x^f} \approx 1.2$\,mm at detection.
+
+%%============================================================
+\section{Per-Pixel Statistics via QMC}
+\label{sec:qmc}
+%%============================================================
+
+\subsection{ACS Decomposition}
+
+Expanding the cosine in~\eqref{eq:port_prob}, the phase dependence of $p_s$ is
+entirely captured by three $\Phi$-independent scalars per pixel $b$, AI $z$, state $s$:
+\begin{align}
+  A_{zsb}(\eta_{iz})
+  &= \E_{\q_0 \sim \text{cloud},\, \x^f\in b}
+     \!\bigl[a_{0}^2(\q_0) + a_{1}^2(\q_0)\bigr],
+  \label{eq:Ab} \\[4pt]
+  C_{zsb}^c(\eta_{iz})
+  &= \E_{\q_0 \sim \text{cloud},\, \x^f\in b}
+     \!\bigl[2\,\iota\,a_{0}(\q_0)\,a_{1}(\q_0)\cos\Delta\phi(\q_0)\bigr],
+  \label{eq:Cc} \\[4pt]
+  C_{zsb}^s(\eta_{iz})
+  &= \E_{\q_0 \sim \text{cloud},\, \x^f\in b}
+     \!\bigl[2\,\iota\,a_{0}(\q_0)\,a_{1}(\q_0)\sin\Delta\phi(\q_0)\bigr],
+  \label{eq:Cs}
+\end{align}
+where the expectation is over initial conditions $\q_0$ drawn from the Gaussian
+cloud $\N(\eta_{iz})$ whose final positions $\x^f(\q_0)$ fall within pixel $b$.
+The expected pixel count is then
+\begin{equation}
+  \boxed{
+  \lambda_{izsb}(\Phi)
+  \;=\;
+  L_{iz}\;
+  \bigl[A_{zsb} + C_{zsb}^c\cos\Phi + C_{zsb}^s\sin\Phi\bigr],
+  }
+  \label{eq:lambda_analytic}
+\end{equation}
+where $\Phi = \Phi_{iz}(\phi_i,\beta)$ from~\eqref{eq:eff_phase} and $L_{iz}$
+is an atom-number scale factor (Section~\ref{sec:atom_number}).
+
+\subsection{QMC Evaluation (\texttt{SurrogatePixelACS})}
+
+The conditional expectations~\eqref{eq:Ab}--\eqref{eq:Cs} are evaluated by
+quasi-Monte Carlo (QMC) quadrature with $n_\mathrm{quad}$ Sobol points.
+
+\begin{enumerate}
+  \item Draw $n_\mathrm{quad}$ quasi-random standard-normal deviates
+        $\mathbf{z}_j \in \R^4$, $j=1,\ldots,n_\mathrm{quad}$, using a
+        scrambled Sobol sequence.  These are fixed at construction time and
+        reused across all $\theta$ evaluations.
+
+  \item Transform to cloud Gaussian: $\q_{0,j} = \mu(\eta) + \mathrm{diag}(\sigma(\eta))\,\mathbf{z}_j$.
+
+  \item Compute detection positions $\x^f_j$ via~\eqref{eq:ballistic} and
+        assign each sample to pixel $b_j$ using pixel edge arrays.
+        Samples outside the image boundary are discarded.
+
+  \item Evaluate the PSMAP at all $\q_{0,j}$ simultaneously via vectorised
+        quadrilinear interpolation on the \texttt{PSMAPSurrogate} grid.
+        This yields amplitudes $(a_{0,j}, a_{1,j})$ and phase residuals
+        $\Delta\phi_j$ for all ports, in one GPU kernel with no Python loops.
+
+  \item Extract $(A,C^c,C^s)$ per point using a \textbf{3-phase trick}:
+        evaluate $p_s(\q_{0,j};\,\Phi)$ at $\Phi \in \{0, \pi/2, \pi\}$,
+        and solve for $A$, $C^c$, $C^s$ by
+        \begin{equation}
+          A = \tfrac{1}{2}[p(\Phi=0) + p(\Phi=\pi)],\quad
+          C^c = \tfrac{1}{2}[p(\Phi=0) - p(\Phi=\pi)],\quad
+          C^s = p(\Phi=\pi/2) - A.
+        \end{equation}
+
+  \item Accumulate per-pixel ACS by equal-weight bincount:
+        \begin{equation}
+          A_{zsb} = \frac{1}{n_\mathrm{in}}
+                    \sum_{j:\,b_j = b} A_{j},
+        \end{equation}
+        and analogously for $C^c_{zsb}$, $C^s_{zsb}$, where
+        $n_\mathrm{in}$ is the number of samples inside the detector.
+        Both ground and excited state statistics are accumulated simultaneously.
+\end{enumerate}
+
+The default $n_\mathrm{quad} = 20{,}000$ Sobol points (rounded up to the next
+power of 2) gives ACS tensors with sub-percent statistical noise in occupied pixels,
+at a cost of one vectorised PSMAP evaluation per call.
+
+%%============================================================
+\section{Generative Model and Likelihood}
+%%============================================================
+
+\subsection{Poisson Observation Model}
+
+Conditional on $\phi_i$ and $\eta_{iz}$, pixel counts are independent Poisson:
+\begin{equation}
+  n_{izsb} \;\sim\; \mathrm{Poisson}\!\bigl(\lambda_{izsb}(\Phi_{iz})\bigr),
+  \qquad s \in \{g,e\},\; b = 1,\ldots,N_b.
+  \label{eq:poisson}
+\end{equation}
+The per-shot conditional log-likelihood (for both AIs jointly) is
+\begin{equation}
+  \log\Lcal_i(\beta,\phi_i,\{\eta_{iz}\})
+  = \sum_{z,s,b}
+    \Bigl[
+      n_{izsb} \log \lambda_{izsb}(\Phi_{iz})
+      - \lambda_{izsb}(\Phi_{iz})
+    \Bigr],
+  \label{eq:cond_ll}
+\end{equation}
+where $\log(n!)$ constants are dropped as parameter-free.
+
+\subsection{Atom Number Scale Factor}
+\label{sec:atom_number}
+
+Rather than tracking the launched atom count $\Lambda_{iz}$ explicitly, we
+absorb it into a per-shot, per-AI scale factor $L_{iz}$ defined by the
+requirement that predicted total counts match observed total counts at the
+profiled cloud parameters $\hat\eta_{iz}$:
+\begin{equation}
+  L_{iz}
+  = \frac{\displaystyle\sum_b \bigl(n_{izgb} + n_{izeb}\bigr)}
+         {\displaystyle\sum_b \bigl(A_{zsb}(\hat\eta_{iz})
+                              + A_{zsb}^{(e)}(\hat\eta_{iz})\bigr)},
+  \label{eq:Lfix}
+\end{equation}
+where the denominator sums the $\phi$-independent terms over all pixels for
+both states.  This normalization is exact whenever the interference terms
+$C^c$ and $C^s$ integrate to zero over all pixels (complementarity), which
+holds to high accuracy in practice.  $L_{iz}$ is computed once at
+$\hat\eta_{iz}$ and treated as fixed.
+
+%%============================================================
+\section{Handling Unobserved Parameters: Profiling and Marginalisation}
+\label{sec:nuisances}
+%%============================================================
+
+The full likelihood~\eqref{eq:cond_ll} involves two kinds of unobserved parameters
+per shot: the common laser phase $\phi_i$, and the cloud parameters $\eta_{iz}$.
+Both must be eliminated before optimising over $\beta$.
+
+\subsection{Marginalise $\phi_i$}
+
+$\phi_i \sim \mathrm{Uniform}(0, 2\pi)$ is completely unknown.  Profiling
+(jointly optimising $\phi_i$ with $\beta$) would allow the per-shot phase to
+absorb the signal entirely, biasing $\hat\beta$ toward zero.  We therefore
+marginalise numerically using a uniform phase grid
+$\phi_k = 2\pi k / K$, $k = 0,\ldots,K-1$:
+\begin{equation}
+  \log\Lcal_i^\mathrm{marg}(\beta,\{\hat\eta_{iz}\})
+  = \operatorname{logsumexp}_{k=0}^{K-1}
+    \!\bigl[\log\Lcal_i(\beta,\phi_k,\{\hat\eta_{iz}\})\bigr]
+    - \log K.
+  \label{eq:lse}
+\end{equation}
+This approximates the exact integral over $\phi_i$ to arbitrary accuracy as
+$K \to \infty$.  The required grid size scales as
+\begin{equation}
+  K \;\gtrsim\; 2\sqrt{\bar N},
+  \label{eq:ntheta}
+\end{equation}
+where $\bar N$ is the mean detected atom count per shot per AI.  In practice
+$K = 512$ is used.
+
+\subsection{Profile $\eta_{iz}$}
+
+Each $\eta_{iz}$ has 8 components; for a $32\times32$ image, there are 2048
+Poisson measurements per shot per AI.  The likelihood is extremely sharply
+peaked in $\eta_{iz}$, so profiling and marginalising are numerically
+equivalent.  We profile: for each shot $i$ and AI $z$, find
+\begin{equation}
+  \hat\eta_{iz}
+  = \arg\max_{\eta}\;
+    \Bigl[
+      \operatorname{logsumexp}_{k}\!\log\Lcal_i^{(z)}(\eta,\phi_k)
+      + \log p(\eta)
+    \Bigr],
+  \label{eq:eta_profile}
+\end{equation}
+where $\log\Lcal_i^{(z)}$ is the single-AI, single-shot conditional logL
+using \emph{both} ports jointly:
+\begin{equation}
+  \log\Lcal_i^{(z)}(\eta,\phi_k)
+  = \sum_{s \in \{g,e\}} \sum_b
+    \Bigl[
+      n_{izsb} \log \lambda_{izsb}(\phi_k;\eta)
+      - \lambda_{izsb}(\phi_k;\eta)
+    \Bigr],
+\end{equation}
+and $\log p(\eta)$ is a Gaussian prior (Section~\ref{sec:prior}).
+
+Crucially, this profiling objective already marginalises over $\phi_i$ via
+logsumexp, using the same phase grid as the signal fit.  The resulting
+$\hat\eta_{iz}$ is then fixed for all subsequent evaluations of
+$\log\Lcal(\beta)$.
+
+\paragraph{Why $\hat\eta$ is approximately independent of $\beta$.}
+The cloud parameters $\eta_{iz}$ control the spatial distribution of atoms
+across pixels; $\beta$ controls the port fractions via the fringe.  These two
+effects are largely orthogonal, so $\hat\eta_{iz}(\beta)$ changes negligibly
+as $\beta$ varies.  This justifies computing $\hat\eta_{iz}$ once (at
+arbitrary $\beta$, e.g.\ $\beta = 0$) and treating it as fixed during the
+outer $\beta$ optimisation.
+
+\subsection{Prior on Cloud Parameters}
+\label{sec:prior}
+
+The Gaussian log-prior on $\eta_{iz}$ is
+\begin{align}
+  \log p(\eta)
+  &= -\frac{\mu_{x_0}^2}{2\sigma_{\mu,\mathrm{pos}}^2}
+     -\frac{\mu_{y_0}^2}{2\sigma_{\mu,\mathrm{pos}}^2}
+     -\frac{\mu_{v_x}^2}{2\sigma_{\mu,\mathrm{vel}}^2}
+     -\frac{\mu_{v_y}^2}{2\sigma_{\mu,\mathrm{vel}}^2} \notag\\
+  &\quad
+     -\frac{(\sigma_x - \bar\sigma_\mathrm{pos})^2}{2\sigma_{\sigma,\mathrm{pos}}^2}
+     -\frac{(\sigma_y - \bar\sigma_\mathrm{pos})^2}{2\sigma_{\sigma,\mathrm{pos}}^2}
+     -\frac{(\sigma_{v_x} - \bar\sigma_\mathrm{vel})^2}{2\sigma_{\sigma,\mathrm{vel}}^2}
+     -\frac{(\sigma_{v_y} - \bar\sigma_\mathrm{vel})^2}{2\sigma_{\sigma,\mathrm{vel}}^2},
+  \label{eq:prior}
+\end{align}
+where the hyperparameters $(\sigma_{\mu,\mathrm{pos}},\sigma_{\mu,\mathrm{vel}},
+\bar\sigma_\mathrm{pos},\bar\sigma_\mathrm{vel},\sigma_{\sigma,\mathrm{pos}},
+\sigma_{\sigma,\mathrm{vel}})$ are parsed from the dataset name and can be
+overridden by command-line arguments.
+
+The optimisation uses a log-sigma parameterisation of the cloud widths:
+$\tilde\sigma_x = \log\sigma_x$ etc., so that positivity of widths is enforced
+by the domain of $\R$ without explicit bounds.  Bounded L-BFGS-B (rather
+than Nelder--Mead) is used, with bounds on the log-widths derived from the
+physical constraints of the image field of view.
+
+\paragraph{Initialisation.}
+Two strategies are supported:
+\begin{itemize}
+  \item \emph{Oracle init}: $\hat\eta_{iz}^{(0)} =$ true cloud parameters
+        read from the H5 file.  Used for validation; referred to as
+        \texttt{--init-from-true}.
+  \item \emph{Prior-mean init}: $\hat\eta_{iz}^{(0)} = (0,0,0,0,\bar\sigma_\mathrm{pos},
+        \bar\sigma_\mathrm{pos},\bar\sigma_\mathrm{vel},\bar\sigma_\mathrm{vel})$.
+\end{itemize}
+
+%%============================================================
+\section{Full Marginal Log-Likelihood}
+%%============================================================
+
+\subsection{Rotation Trick for AI $z=100$}
+
+For AI $z=100$, the effective phase at grid point $k$ in shot $i$ is
+$\phi_k + \delta\phi_i(\beta)$.  Rather than recomputing the ACS for each
+$(\delta\phi_i, k)$, we apply a rotation to the precomputed ACS:
+\begin{align}
+  C^{c,\mathrm{eff}}_{zsb}(\beta)
+  &= C^c_{zsb}\cos(\delta\phi_i) + C^s_{zsb}\sin(\delta\phi_i), \\
+  C^{s,\mathrm{eff}}_{zsb}(\beta)
+  &= -C^c_{zsb}\sin(\delta\phi_i) + C^s_{zsb}\cos(\delta\phi_i).
+\end{align}
+This follows from the angle-addition identity and means that the per-evaluation
+cost for Z100 is a 2D rotation of the precomputed ACS tensors, not a new PSMAP
+evaluation.
+
+\subsection{Per-Shot Marginal Log-Likelihood}
+
+Given precomputed ACS $\{A_{zsb}, C^c_{zsb}, C^s_{zsb}\}$ and scale factor
+$L_{iz}$ at $\hat\eta_{iz}$, the conditional log-likelihood at phase grid
+point $k$ is:
+\begin{align}
+  \log\Lcal_i(\beta,\phi_k)
+  &= \sum_z \sum_{s \in \{g,e\}} \sum_b
+     \Bigl[n_{izsb}\log\lambda_{izsb}(\phi_k)
+           - \lambda_{izsb}(\phi_k)\Bigr],
+  \label{eq:ll_phik}
+\end{align}
+where for Z0: $\lambda_{igsb}(\phi_k) = L_{i,0}\,[A_{0sb} +
+C^c_{0sb}\cos\phi_k + C^s_{0sb}\sin\phi_k]$, and for Z100 the rotated ACS
+coefficients are used.  The marginal over $\phi_i$ is then~\eqref{eq:lse}.
+
+\subsection{Full Log-Likelihood}
+
+Since shots are independent given $\beta$:
+\begin{equation}
+  \log\Lcal(\beta)
+  = \sum_{i=1}^{N_\mathrm{shots}} \log\Lcal_i^\mathrm{marg}(\beta).
+  \label{eq:full_ll}
+\end{equation}
+
+%%============================================================
+\section{Implementation}
+\label{sec:impl}
+%%============================================================
+
+\subsection{ACS Pre-Computation (Once per Shot per AI)}
+
+The following steps are performed once per shot per AI and the results cached
+to disk as a compressed NumPy archive (\texttt{.npz}) keyed by
+\texttt{run/site/bins/n\_quad/K}:
+
+\begin{enumerate}
+
+  \item \textbf{Cloud nuisance profiling.}
+        Solve~\eqref{eq:eta_profile} with L-BFGS-B (up to 200 iterations,
+        \texttt{ftol}$=10^{-10}$, \texttt{gtol}$=10^{-8}$, 20 line-search steps).
+        The objective evaluates the logsumexp over $K$ phase-grid points for
+        both ports jointly at the current $\eta$ via \texttt{SurrogatePixelACS}.
+
+  \item \textbf{ACS at $\hat\eta_{iz}$.}
+        Call \texttt{SurrogatePixelACS.pixel\_acs}$(\hat\eta_{iz})$ to obtain
+        tensors $\{A_{zsb}, C^c_{zsb}, C^s_{zsb}\}_{s \in \{g,e\}}$ of shape
+        $(N_b,)$ each, on GPU.
+
+  \item \textbf{Scale factor.}
+        Compute $L_{iz}$ via~\eqref{eq:Lfix}.
+
+  \item \textbf{Cache.}
+        Store ACS tensors, $L_{iz}$, $\hat\eta_{iz}$, and raw pixel counts
+        $(n_{izgsb}, n_{izesb})$ to \texttt{.npz}.
+
+\end{enumerate}
+
+\subsection{Signal Fit (Per Run)}
+
+Given the cached ACS tables for all shots in a run, fit $\beta = (A_s, A_c)$:
+
+\begin{enumerate}
+
+  \item \textbf{Signal phases.}
+        $\delta\phi_i = A_s\sin(2\pi f\,t_i) + A_c\cos(2\pi f\,t_i)$
+        for $i = 1,\ldots,N_\mathrm{shots}$.
+
+  \item \textbf{Rotation trick.}
+        For each shot $i$, rotate the Z100 ACS tensors by $\delta\phi_i$.
+
+  \item \textbf{Expected counts.}
+        For each phase point $\phi_k$, compute $\lambda_{izsb}(\phi_k)$ via
+        \eqref{eq:lambda_analytic} as a GPU broadcast:
+        \texttt{lam[k, b] = L * max(A[b] + Cc[b]*cos\_phi[k]
+        + Cs[b]*sin\_phi[k], 1e-300)}.
+
+  \item \textbf{Conditional logL.}
+        Compute~\eqref{eq:ll_phik} for each $(i, k)$ pair.
+
+  \item \textbf{Phase marginalisation.}
+        Apply logsumexp over $k$ and subtract $\log K$.
+
+  \item \textbf{Shot sum and optimisation.}
+        Sum over shots; negate and pass to L-BFGS-B with bounds
+        $A_s \in [0, \pi]$, $A_c \in [-\pi, \pi]$.
+
+\end{enumerate}
+
+\subsection{Multi-Start Strategy for $\beta$}
+
+The marginal log-likelihood $\log\Lcal(A_s, A_c)$ is smooth but can be flat
+near the null $(0,0)$ when the signal is weak.  We use multi-start L-BFGS-B
+from amplitude starting values $A_s^{(0)} \in \{0, 0.03, 0.07, 0.10, 0.15\}$
+at $A_c^{(0)} = 0$, take the best solution, and report convergence diagnostics.
+
+\subsection{Computational Cost}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Step & Phase & Typical wall-time \\
+\midrule
+\texttt{SurrogatePixelACS} construction   & Once (shared) & $\sim\!12$\,s \\
+Cloud profiling ($K{=}512$ logsumexp)     & Per shot/AI   & $\sim\!0.5$--$2$\,s \\
+All shots profiling + ACS cache           & Per run       & $\sim\!1$--$2$\,min \\
+Signal fit (50 shots, multi-start)        & Per run       & $\sim\!40$\,s \\
+\bottomrule
+\end{tabular}
+\caption{Typical timings on one GPU (A100/V100 class) with $K=512$, $N_b=1024$
+($32\times32$ bins), $n_\mathrm{quad}=20{,}000$, $N_\mathrm{shots}=50$.
+Cloud profiling timings dominate on the first pass; subsequent runs load from
+the \texttt{.npz} cache in milliseconds.}
+\label{tab:cost}
+\end{table}
+
+%%============================================================
+\section{Maximum Likelihood Estimation}
+%%============================================================
+
+\subsection{Science Parameters}
+
+With $f$ fixed, the only free parameters are $\beta = (A_s, A_c)$.
+The MLE is
+\begin{equation}
+  \hat\beta = \arg\max_\beta\; \log\Lcal(\beta),
+  \label{eq:mle}
+\end{equation}
+solved by multi-start L-BFGS-B (Section~\ref{sec:impl}).  The recovered
+amplitude and phase are $\hat A = \sqrt{\hat A_s^2 + \hat A_c^2}$ and
+$\hat\varphi = \arctan2(\hat A_c, \hat A_s)$.
+
+\subsection{True Signal Parameterisation}
+
+The simulated signal is generated as
+$\delta\phi_i = A_\mathrm{true}\sin(2\pi f t_i + \varphi_\mathrm{true})$.
+Expanding via angle addition:
+\begin{equation}
+  A_s^\mathrm{true} = A_\mathrm{true}\cos\varphi_\mathrm{true},
+  \qquad
+  A_c^\mathrm{true} = A_\mathrm{true}\sin\varphi_\mathrm{true},
+\end{equation}
+so the ground-truth $(A_s, A_c)$ is read directly from the H5 file attributes
+\texttt{signal\_amp} and \texttt{signal\_phase}.  Note that $\delta\phi_i$ is
+stored only in the Z100 H5 file (it is zero in Z0 by construction).
+
+%%============================================================
+\section{Validation}
+%%============================================================
+
+Running \texttt{fit\_surrogate\_profiled\_signal.py} with oracle cloud
+initialisation (\texttt{--init-from-true}) on the default 1\,M-atom dataset
+($N_\mathrm{shots}=50$, $K=512$, $n_\mathrm{quad}=20{,}000$) gives:
+
+\begin{itemize}
+  \item Signal amplitude RMSE $\approx 0.0013$\,rad
+        (1.3\,\% of true $A=0.1$\,rad).
+  \item Signal phase RMSE $\approx 0.009$\,rad.
+  \item Cloud COM RMSE: $\sim\!2$--$5$\,$\mu$m for position,
+        $\sim\!1$--$4$\,$\mu$m/s for velocity.
+  \item Cloud width RMSE: $\sim\!0.1$--$0.3$\,$\mu$m.
+  \item L-BFGS-B converges in $\sim\!5$ iterations and $\sim\!25$ function
+        evaluations for both the cloud profiling and the signal fit.
+\end{itemize}
+
+\end{document}
