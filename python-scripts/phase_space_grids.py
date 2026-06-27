@@ -176,7 +176,7 @@ def main():
     print(f'  Detection time   : {float(DETECTION_TIME):.3f} s')
     print()
 
-    stems = {z0: f'PSGRID4D_CONFOCAL_Z{int(z0)}' for z0 in Z0_VALUES}
+    stems = {z0: f'PSGRID4D_CONFOCAL_FINE_Z{int(z0)}' for z0 in Z0_VALUES}
 
     for z0 in Z0_VALUES:
         zgrid  = [z0, z0, 1]

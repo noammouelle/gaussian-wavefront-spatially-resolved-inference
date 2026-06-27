@@ -331,9 +331,10 @@ class PSMAPImageModel:
 
 class PSMAPConditionalImageModel:
     # Smooth final-image model using conditional Gaussian quadrature.
-    def __init__(self, axes, ground_grid, excited_grid, t_det, x_edges, y_edges, hermite_order=12):
+    def __init__(self, axes, ground_grid, excited_grid, t_det, x_edges, y_edges,
+                 hermite_order=12, interp_method="linear"):
         from scipy.interpolate import RegularGridInterpolator
-        options = dict(bounds_error=False, fill_value=None, method="linear")
+        options = dict(bounds_error=False, fill_value=None, method=interp_method)
         self.ground_interpolator = RegularGridInterpolator(axes, ground_grid, **options)
         self.excited_interpolator = RegularGridInterpolator(axes, excited_grid, **options)
         self.t_det = float(t_det)
@@ -346,14 +347,14 @@ class PSMAPConditionalImageModel:
         self.hermite_weights = np.outer(weights, weights) / np.pi
 
     @classmethod
-    def from_psmap(cls, psmap, t_det, phi0, x_edges, y_edges, hermite_order=12):
+    def from_psmap(cls, psmap, t_det, phi0, x_edges, y_edges, hermite_order=12, interp_method="linear"):
         nodes, ground_nodes, excited_nodes = _psmap_nodes_and_state_probabilities(psmap, phi0)
         axes = tuple(np.unique(nodes[:, index]) for index in range(4))
         shape = tuple(len(axis) for axis in axes)
         indices = tuple(np.searchsorted(axis, nodes[:, index]) for index, axis in enumerate(axes))
         ground_grid, excited_grid = np.empty(shape), np.empty(shape)
         ground_grid[indices], excited_grid[indices] = ground_nodes, excited_nodes
-        return cls(axes, ground_grid, excited_grid, t_det, x_edges, y_edges, hermite_order)
+        return cls(axes, ground_grid, excited_grid, t_det, x_edges, y_edges, hermite_order, interp_method)
 
     @staticmethod
     def _conditional_parameters(mu_x0, mu_v0, sigma_x0, sigma_v0, t_det):

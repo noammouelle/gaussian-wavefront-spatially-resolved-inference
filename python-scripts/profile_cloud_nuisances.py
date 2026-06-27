@@ -290,6 +290,160 @@ class SurrogatePixelACS:
         return bc(Am_g), bc(Ac_g), bc(As_g), bc(Am_e), bc(Ac_e), bc(As_e)
 
 
+class SemiAnalyticPixelACS:
+    """
+    Pixel ACS via exact Gaussian CDF spatial integral + 2-D Gauss-Hermite
+    velocity quadrature.
+
+    Motivation
+    ----------
+    SurrogatePixelACS bins 4-D QMC samples, giving per-bin noise
+    O(1/sqrt(N_quad/N_bins)).  For 1e8-atom data the data-noise per bin is
+    0.3%, while 2M QMC with 1024 bins gives 2.2% model noise — 7x too
+    large.  Tail bins get zero QMC atoms, causing log(0) spikes that
+    dominate the likelihood surface.
+
+    This class avoids both problems:
+    - Spatial integral: exact Gaussian CDF — smooth, never zero.
+    - Velocity integral per pixel: 2-D Gauss-Hermite over the conditional
+      velocity distribution given (xf, yf) = pixel centre.  Deterministic
+      error that shrinks with n_gh; independent of N_atoms.
+
+    Parameters
+    ----------
+    surrogate_acs : SurrogatePixelACS
+        Pre-built evaluator.  Reuses its GPU grid and _eval_fast method.
+    n_gh : int
+        GH order per velocity dimension.  Total PSMAP evaluations per
+        pixel_acs() call: n_bins * n_gh^2.  Default 20 (400 per pixel).
+    """
+
+    def __init__(self, surrogate_acs: "SurrogatePixelACS", n_gh: int = 20):
+        from numpy.polynomial.hermite import hermgauss
+        from scipy.special import ndtr
+
+        # Borrow GPU interpolation infrastructure
+        self._eval_fast  = surrogate_acs._eval_fast   # bound method
+        self._port_inter = surrogate_acs._port_inter
+        self.s0_g        = surrogate_acs.s0_g
+        self.s1_g        = surrogate_acs.s1_g
+        self.t_det       = surrogate_acs.t_det
+        self.n_bins      = surrogate_acs.n_bins
+        self.nx          = surrogate_acs.nx
+        self.ny          = surrogate_acs.ny
+        self._ndtr       = ndtr
+
+        x_edges = surrogate_acs.x_edges_g.get()
+        y_edges = surrogate_acs.y_edges_g.get()
+        self.x_edges = x_edges
+        self.y_edges = y_edges
+        xc = 0.5 * (x_edges[:-1] + x_edges[1:])   # (nx,)
+        yc = 0.5 * (y_edges[:-1] + y_edges[1:])   # (ny,)
+
+        # Flat pixel-centre arrays: (n_bins,) — indexed as ix*ny + iy
+        ix_all = np.repeat(np.arange(self.nx), self.ny)
+        iy_all = np.tile(np.arange(self.ny), self.nx)
+        self.xc_bins = cp.asarray(xc[ix_all], dtype=cp.float64)
+        self.yc_bins = cp.asarray(yc[iy_all], dtype=cp.float64)
+        self.x_lo_bins = cp.asarray(x_edges[:-1][ix_all], dtype=cp.float64)
+        self.x_hi_bins = cp.asarray(x_edges[1:] [ix_all], dtype=cp.float64)
+        self.y_lo_bins = cp.asarray(y_edges[:-1][iy_all], dtype=cp.float64)
+        self.y_hi_bins = cp.asarray(y_edges[1:] [iy_all], dtype=cp.float64)
+        # CPU copies for ndtr
+        self._x_lo = x_edges[:-1][ix_all]
+        self._x_hi = x_edges[1:] [ix_all]
+        self._y_lo = y_edges[:-1][iy_all]
+        self._y_hi = y_edges[1:] [iy_all]
+        self._xc = xc[ix_all]
+        self._yc = yc[iy_all]
+
+        # 2-D Gauss-Hermite grid for N(0,1): nodes transform from physicists'
+        # GH (weight exp(-x^2)) via z = x*sqrt(2), w_prob = w/sqrt(pi)
+        xi, wi = hermgauss(n_gh)
+        z_gh = xi * np.sqrt(2.0)        # (n_gh,)  nodes for N(0,1)
+        w_gh = wi / np.sqrt(np.pi)      # (n_gh,)  weights, sum = 1
+        zx, zy = np.meshgrid(z_gh, z_gh, indexing='ij')
+        wx, wy = np.meshgrid(w_gh, w_gh, indexing='ij')
+        self.z2_x = cp.asarray(zx.ravel(), dtype=cp.float64)  # (n_v,)
+        self.z2_y = cp.asarray(zy.ravel(), dtype=cp.float64)
+        self.w2   = cp.asarray((wx * wy).ravel(), dtype=cp.float64)
+        self.n_v  = int(len(self.w2))   # n_gh^2
+
+    def pixel_acs(self, theta):
+        """
+        theta : (8,) — [mu_x0, mu_y0, mu_vx0, mu_vy0, sx0, sy0, svx0, svy0]
+        Returns: A_g, Cc_g, Cs_g, A_e, Cc_e, Cs_e  — shape (n_bins,) on GPU.
+        """
+        mu_x, mu_y, mu_vx, mu_vy = (float(theta[0]), float(theta[1]),
+                                     float(theta[2]), float(theta[3]))
+        sx, sy, svx, svy = (float(theta[4]), float(theta[5]),
+                             float(theta[6]), float(theta[7]))
+        T = self.t_det
+
+        # Detection-plane Gaussian
+        mu_xf = mu_x + T * mu_vx
+        mu_yf = mu_y + T * mu_vy
+        sxf   = float(np.sqrt(sx**2  + (T * svx)**2))
+        syf   = float(np.sqrt(sy**2  + (T * svy)**2))
+
+        # Exact spatial weights via Gaussian CDF (CPU ndtr, negligible cost)
+        ndtr = self._ndtr
+        P_x = ndtr((self._x_hi - mu_xf) / sxf) - ndtr((self._x_lo - mu_xf) / sxf)
+        P_y = ndtr((self._y_hi - mu_yf) / syf) - ndtr((self._y_lo - mu_yf) / syf)
+        P_b = cp.asarray(P_x * P_y, dtype=cp.float64)  # (n_bins,) on GPU
+
+        # Conditional velocity distribution at pixel centre (xb, yb)
+        # vx0 | (xf = xb) ~ N(mu_vx|xb, svx_cond)
+        #   mu_vx|xb = mu_vx + T * svx^2/sxf^2 * (xb - mu_xf)
+        #   svx_cond = svx * sx / sxf        (scalar)
+        svx_c = float(svx * sx / sxf)
+        svy_c = float(svy * sy / syf)
+        mu_vx_cond = mu_vx + (T * svx**2 / sxf**2) * (self._xc - mu_xf)  # (n_bins,)
+        mu_vy_cond = mu_vy + (T * svy**2 / syf**2) * (self._yc - mu_yf)
+        mu_vx_g = cp.asarray(mu_vx_cond, dtype=cp.float64)
+        mu_vy_g = cp.asarray(mu_vy_cond, dtype=cp.float64)
+
+        # Build (n_bins * n_v) evaluation points
+        # vx0[b,q] = mu_vx_cond[b] + svx_c * z2_x[q]
+        # x0 [b,q] = xc[b] - T * vx0[b,q]
+        vx0_g = (mu_vx_g[:, None] + svx_c * self.z2_x[None, :]).ravel()
+        vy0_g = (mu_vy_g[:, None] + svy_c * self.z2_y[None, :]).ravel()
+        x0_g  = (self.xc_bins[:, None] - T * (mu_vx_g[:, None]
+                  + svx_c * self.z2_x[None, :])).ravel()
+        y0_g  = (self.yc_bins[:, None] - T * (mu_vy_g[:, None]
+                  + svy_c * self.z2_y[None, :])).ravel()
+
+        # PSMAP evaluation — single batched call
+        dphi_g, amp0_g, amp1_g = self._eval_fast(x0_g, y0_g, vx0_g, vy0_g)
+
+        # ACS per evaluation point  (n_eval, nP)
+        inter  = self._port_inter[None]
+        A_per  = amp0_g**2 + amp1_g**2
+        Cc_per =  inter * 2.0 * amp0_g * amp1_g * cp.cos(dphi_g)
+        Cs_per = -inter * 2.0 * amp0_g * amp1_g * cp.sin(dphi_g)
+
+        Am_g_e = A_per [:, self.s0_g].sum(-1)   # (n_eval,)
+        Ac_g_e = Cc_per[:, self.s0_g].sum(-1)
+        As_g_e = Cs_per[:, self.s0_g].sum(-1)
+        Am_e_e = A_per [:, self.s1_g].sum(-1)
+        Ac_e_e = Cc_per[:, self.s1_g].sum(-1)
+        As_e_e = Cs_per[:, self.s1_g].sum(-1)
+
+        # GH-weighted average per pixel: (n_eval,) → (n_bins, n_v) → (n_bins,)
+        def _gh(v):
+            return (v.reshape(self.n_bins, self.n_v) * self.w2[None, :]).sum(1)
+
+        # Multiply by spatial weight
+        A_g  = P_b * _gh(Am_g_e)
+        Cc_g = P_b * _gh(Ac_g_e)
+        Cs_g = P_b * _gh(As_g_e)
+        A_e  = P_b * _gh(Am_e_e)
+        Cc_e = P_b * _gh(Ac_e_e)
+        Cs_e = P_b * _gh(As_e_e)
+
+        return A_g, Cc_g, Cs_g, A_e, Cc_e, Cs_e
+
+
 # ── Joint phi-marginalised logL ────────────────────────────────────────────────
 
 def _joint_logL(n_g0, n_e0, A_g0, Cc_g0, Cs_g0, A_e0, Cc_e0, Cs_e0,
