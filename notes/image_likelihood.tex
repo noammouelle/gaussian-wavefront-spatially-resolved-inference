@@ -176,7 +176,7 @@ entirely captured by three $\Phi$-independent scalars per pixel $b$, AI $z$, sta
   \label{eq:Cc} \\[4pt]
   C_{zsb}^s(\eta_{iz})
   &= \E_{\q_0 \sim \text{cloud},\, \x^f\in b}
-     \!\bigl[2\,\iota\,a_{0}(\q_0)\,a_{1}(\q_0)\sin\Delta\phi(\q_0)\bigr],
+     \!\bigl[-2\,\iota\,a_{0}(\q_0)\,a_{1}(\q_0)\sin\Delta\phi(\q_0)\bigr],
   \label{eq:Cs}
 \end{align}
 where the expectation is over initial conditions $\q_0$ drawn from the Gaussian
@@ -213,17 +213,17 @@ quasi-Monte Carlo (QMC) quadrature with $n_\mathrm{quad}$ Sobol points.
 
   \item Evaluate the PSMAP at all $\q_{0,j}$ simultaneously via vectorised
         quadrilinear interpolation on the \texttt{PSMAPSurrogate} grid.
-        This yields amplitudes $(a_{0,j}, a_{1,j})$ and phase residuals
-        $\Delta\phi_j$ for all ports, in one GPU kernel with no Python loops.
+        This yields amplitudes $(a_{0,jp}, a_{1,jp})$ and phase residuals
+        $\Delta\phi_{jp}$ for all ports $p$, in one GPU kernel with no Python loops.
 
-  \item Extract $(A,C^c,C^s)$ per point using a \textbf{3-phase trick}:
-        evaluate $p_s(\q_{0,j};\,\Phi)$ at $\Phi \in \{0, \pi/2, \pi\}$,
-        and solve for $A$, $C^c$, $C^s$ by
+  \item Read off the ACS components directly from the PSMAP outputs:
         \begin{equation}
-          A = \tfrac{1}{2}[p(\Phi=0) + p(\Phi=\pi)],\quad
-          C^c = \tfrac{1}{2}[p(\Phi=0) - p(\Phi=\pi)],\quad
-          C^s = p(\Phi=\pi/2) - A.
+          A_{jp} = a_{0,jp}^2 + a_{1,jp}^2, \quad
+          C^c_{jp} = \iota_p\,2\,a_{0,jp}\,a_{1,jp}\cos\Delta\phi_{jp}, \quad
+          C^s_{jp} = -\iota_p\,2\,a_{0,jp}\,a_{1,jp}\sin\Delta\phi_{jp}.
         \end{equation}
+        Sum over ports with matching state label to obtain
+        $(A_j, C^c_j, C^s_j)$ per sample per state.
 
   \item Accumulate per-pixel ACS by equal-weight bincount:
         \begin{equation}

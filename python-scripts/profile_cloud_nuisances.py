@@ -259,28 +259,23 @@ class SurrogatePixelACS:
         inside  = (ix >= 0) & (ix < self.nx) & (iy >= 0) & (iy < self.ny)
         bin_idx = (ix * self.ny + iy).astype(cp.int64)
 
-        # Interpolate (phi-independent) — fully vectorised, no Python loops
+        # Interpolate PSMAP — fully vectorised, no Python loops
         dphi_g, amp0_g, amp1_g = self._eval_fast(x0_g, y0_g, vx0_g, vy0_g)
         # shapes: (n_quad, nP)
 
-        # Phi-independent terms
-        base = amp0_g**2 + amp1_g**2                              # (n_quad, nP)
-        mod  = self._port_inter[None]*2.0*amp0_g*amp1_g           # (n_quad, nP)
-        c_dp = cp.cos(dphi_g); s_dp = cp.sin(dphi_g)              # (n_quad, nP)
+        # ACS components directly from PSMAP outputs
+        inter = self._port_inter[None]                             # (1, nP)
+        A_per   = amp0_g**2 + amp1_g**2                           # (n_quad, nP)
+        Cc_per  =  inter * 2.0 * amp0_g * amp1_g * cp.cos(dphi_g) # (n_quad, nP)
+        Cs_per  = -inter * 2.0 * amp0_g * amp1_g * cp.sin(dphi_g) # (n_quad, nP)
 
-        # 3-phi evaluation in one batch: phi = [0, pi/2, pi]
-        # cos(dphi+phi) = cos_dphi*cos(phi) - sin_dphi*sin(phi)
-        # cos(phi):  [1,  0, -1]
-        # sin(phi):  [0,  1,  0]
-        cos_total = cp.stack([ c_dp,       -s_dp,       -c_dp], axis=0)  # (3,n,nP)
-        prob3 = cp.maximum(base[None] + mod[None]*cos_total, 0.0)         # (3,n,nP)
-
-        # Ground/excited state sums
-        pg3 = prob3[:, :, self.s0_g].sum(-1)   # (3, n_quad)
-        pe3 = prob3[:, :, self.s1_g].sum(-1)
-
-        Am_g = 0.5*(pg3[0]+pg3[2]); Ac_g = 0.5*(pg3[0]-pg3[2]); As_g = pg3[1] - Am_g
-        Am_e = 0.5*(pe3[0]+pe3[2]); Ac_e = 0.5*(pe3[0]-pe3[2]); As_e = pe3[1] - Am_e
+        # Sum over ports per state
+        Am_g = A_per  [:, self.s0_g].sum(-1)   # (n_quad,)
+        Ac_g = Cc_per [:, self.s0_g].sum(-1)
+        As_g = Cs_per [:, self.s0_g].sum(-1)
+        Am_e = A_per  [:, self.s1_g].sum(-1)
+        Ac_e = Cc_per [:, self.s1_g].sum(-1)
+        As_e = Cs_per [:, self.s1_g].sum(-1)
 
         # Equal-weight MC quadrature over inside-detector points
         n_in = float(inside.sum())
