@@ -106,11 +106,11 @@ DEFAULT_PSMAP_Z100 = REPO / "output-files" / "PSGRID4D_CONFOCAL_Z100.h5"
 
 class SurrogatePixelACS:
     """
-    GPU evaluator using PSMAPSurrogate quadrilinear interpolation.
+    GPU evaluator using PSMAPSurrogate Catmull-Rom cubic interpolation.
 
     Matches the data-generation model exactly: QMC points are drawn from the
     cloud Gaussian and port probabilities are obtained by interpolating the PSMAP
-    with the same quadrilinear scheme used by PSMAPSurrogate.generate_atoms().
+    with the same cubic scheme used by PSMAPSurrogate.generate_atoms().
 
     Construction pre-generates N_quad Sobol points as standard-normal deviates
     on GPU.  Each call to pixel_acs() transforms them to the cloud Gaussian,
@@ -154,13 +154,13 @@ class SurrogatePixelACS:
         self._port_inter  = cp.asarray(surrogate.port_interfering, dtype=cp.float64)
         self.nP = nP
 
-        # Precompute corner offsets for 4D quadrilinear interpolation:
-        # 16 corners = {0,1}^4 ordered by bitmask
-        bits = cp.arange(16, dtype=cp.int32)
-        self._bx  = ((bits >> 0) & 1).astype(cp.int32)
-        self._by  = ((bits >> 1) & 1).astype(cp.int32)
-        self._bvx = ((bits >> 2) & 1).astype(cp.int32)
-        self._bvy = ((bits >> 3) & 1).astype(cp.int32)
+        # Precompute stencil indices for 4D Catmull-Rom cubic interpolation:
+        # 256 corners = {0,1,2,3}^4 — stencil index k → grid offset k-1
+        bits = cp.arange(256, dtype=cp.int32)
+        self._ox  = ((bits // 64) % 4).astype(cp.int32)   # x  stencil idx
+        self._oy  = ((bits // 16) % 4).astype(cp.int32)   # y  stencil idx
+        self._ovx = ((bits //  4) % 4).astype(cp.int32)   # vx stencil idx
+        self._ovy = ( bits        % 4).astype(cp.int32)   # vy stencil idx
 
         # Grid params for _find_cell
         self._x_lo  = float(surrogate._x_lo);   self._dx  = float(surrogate._dx)
@@ -179,11 +179,23 @@ class SurrogatePixelACS:
         tx  = cp.clip(raw - idx.astype(cp.float64), 0.0, 1.0)
         return idx, tx
 
+    @staticmethod
+    def _cr_weights(t):
+        """Catmull-Rom weights for stencil indices 0..3 (offsets -1..2).
+        t: (n_quad,) → returns (4, n_quad)."""
+        t2 = t*t; t3 = t2*t
+        return cp.stack([
+            -0.5*t  +      t2 - 0.5*t3,
+             1.0    - 2.5 *t2 + 1.5*t3,
+             0.5*t  + 2.0 *t2 - 1.5*t3,
+                    - 0.5 *t2 + 0.5*t3,
+        ])  # (4, n_quad)
+
     def _eval_fast(self, x0_g, y0_g, vx0_g, vy0_g):
         """
-        Fully vectorised quadrilinear interpolation over all ports at once.
+        Fully vectorised Catmull-Rom cubic interpolation over all ports at once.
 
-        No Python loops over ports or corners.  A single (16, n_quad) gather
+        No Python loops over ports or corners.  A single (256, n_quad) gather
         per field replaces the original 16-iteration Python for-loop.
 
         Returns dphi, amp0, amp1 each of shape (n_quad, nP).
@@ -193,37 +205,36 @@ class SurrogatePixelACS:
         ivx, tvx = self._find_cell(vx0_g, self._vx_lo, self._dvx, self._nvx_m1)
         ivy, tvy = self._find_cell(vy0_g, self._vy_lo, self._dvy, self._nvy_m1)
 
-        # Corner weights: (16, n_quad)
-        bx  = self._bx;  by  = self._by
-        bvx = self._bvx; bvy = self._bvy
-        bx_b  = bx [:, None].astype(bool)
-        by_b  = by [:, None].astype(bool)
-        bvx_b = bvx[:, None].astype(bool)
-        bvy_b = bvy[:, None].astype(bool)
-        w = (cp.where(bx_b,  tx[None],  1.0-tx[None])
-           * cp.where(by_b,  ty[None],  1.0-ty[None])
-           * cp.where(bvx_b, tvx[None], 1.0-tvx[None])
-           * cp.where(bvy_b, tvy[None], 1.0-tvy[None]))  # (16, n_quad)
+        # Catmull-Rom weights per dimension: each (4, n_quad)
+        wx  = self._cr_weights(tx)
+        wy  = self._cr_weights(ty)
+        wvx = self._cr_weights(tvx)
+        wvy = self._cr_weights(tvy)
 
-        # Corner grid indices: (16, n_quad)
-        ix_c  = ix [None] + bx [:, None]
-        iy_c  = iy [None] + by [:, None]
-        ivx_c = ivx[None] + bvx[:, None]
-        ivy_c = ivy[None] + bvy[:, None]
+        # Corner weights: (256, n_quad)
+        # self._ox etc. are (256,) stencil indices in {0,1,2,3}
+        # wx[self._ox] selects the right weight row for each corner: (256, n_quad)
+        w = wx[self._ox] * wy[self._oy] * wvx[self._ovx] * wvy[self._ovy]
+
+        # Corner grid indices: (256, n_quad) — stencil offset = stencil_idx - 1
+        ix_c  = cp.clip(ix [None] + self._ox [:, None] - 1, 0, self._nx_m1)
+        iy_c  = cp.clip(iy [None] + self._oy [:, None] - 1, 0, self._ny_m1)
+        ivx_c = cp.clip(ivx[None] + self._ovx[:, None] - 1, 0, self._nvx_m1)
+        ivy_c = cp.clip(ivy[None] + self._ovy[:, None] - 1, 0, self._nvy_m1)
 
         # Batch gather over all ports: stacked grids are (nP, nx, ny, nvx, nvy)
-        # Expand to (nP, 16, n_quad) via broadcast indexing
+        # Expand to (nP, 256, n_quad) via broadcast indexing
         nP = self.nP
-        pi_idx = cp.arange(nP, dtype=cp.int32)[:, None, None]    # (nP, 1, 1)
-        ix_e   = ix_c [None]; iy_e = iy_c [None]                 # (1, 16, n_quad)
+        pi_idx = cp.arange(nP, dtype=cp.int32)[:, None, None]     # (nP, 1, 1)
+        ix_e   = ix_c [None]; iy_e  = iy_c [None]                 # (1, 256, n_quad)
         ivx_e  = ivx_c[None]; ivy_e = ivy_c[None]
 
-        # Each gather: (nP, 16, n_quad) → weighted sum → (nP, n_quad)
+        # Each gather: (nP, 256, n_quad) → weighted sum → (nP, n_quad)
         def _gather_sum(stack):
-            corners = stack[pi_idx, ix_e, iy_e, ivx_e, ivy_e]    # (nP, 16, n_quad)
-            return (corners * w[None]).sum(1)                      # (nP, n_quad)
+            corners = stack[pi_idx, ix_e, iy_e, ivx_e, ivy_e]     # (nP, 256, n_quad)
+            return (corners * w[None]).sum(1)                       # (nP, n_quad)
 
-        dphi_resid = _gather_sum(self._dphi_stack)   # (nP, n_quad)
+        dphi_resid = _gather_sum(self._dphi_stack)    # (nP, n_quad)
         amp0_out   = _gather_sum(self._amp0_stack).T  # (n_quad, nP)
         amp1_out   = _gather_sum(self._amp1_stack).T
 
