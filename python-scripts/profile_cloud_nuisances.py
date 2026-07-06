@@ -22,10 +22,22 @@ independent cloud parameters (different atomic ensembles).
 
 Implementation
 --------------
-All computation except the final scalar extraction runs on GPU:
-  1. Gaussian phase-space weights: vectorised GPU ops (~3ms per theta eval).
-  2. Six GPU bincounts → pixel-level (A, Cc, Cs) per state per AI.
-  3. GPU logsumexp marginalises phi_i.
+Per-pixel ACS coefficients are computed via semi-analytic Gauss-Hermite (GH)
+quadrature over the conditional velocity distribution p(vx0,vy0 | xf, yf):
+
+    rate_ij(phi0) = N × p(xc_i, yc_j) × pixel_area
+                        × [A_ij + C_ij*cos(phi0) + S_ij*sin(phi0)]
+
+  - Spatial weight p(xc_i, yc_j): exact Gaussian CDF integral over the pixel.
+  - A_ij, C_ij, S_ij: GH-weighted average of PSMAP outputs over n_gh²
+    velocity nodes from the conditional distribution at the pixel centre.
+
+This avoids QMC binning noise and gradient stochasticity; the integrand is
+smooth (Gaussian × Catmull-Rom surrogate) so n_gh=20 (400 pts/pixel) is
+near-exact.  All heavy computation runs on GPU in a single batched call.
+
+Spatial downsampling: use --bins to set the inference image resolution
+(n_bins = bins², GH cost scales linearly with n_bins).
 
 Spread parameters are log-transformed for unconstrained optimisation.
 
@@ -44,6 +56,7 @@ Usage
     python profile_cloud_nuisances.py [run_name] [options]
 
     python profile_cloud_nuisances.py --ntheta 256 --max-shots 5 --init-from-true
+    python profile_cloud_nuisances.py --bins 64 --n-gh 20 --max-shots 10
 """
 
 from __future__ import annotations
@@ -95,11 +108,18 @@ H5_KEYS = {
 
 DEFAULT_RUN = (
     REPO / "data"
-    / "R80_N50_A1000000_muXStd10.0um_muVxStd10.0um_sigX100um_sigVx309um_"
+    / "R20_N200_A1000000_muXStd10.0um_muVxStd10.0um_sigX100um_sigVx100um_"
       "sigXStd10.0um_sigVxStd10.0um_phi0random_sig_A0.100_f0.3000"
 )
-DEFAULT_PSMAP_Z0   = REPO / "output-files" / "PSGRID4D_CONFOCAL_Z0.h5"
-DEFAULT_PSMAP_Z100 = REPO / "output-files" / "PSGRID4D_CONFOCAL_Z100.h5"
+DEFAULT_PSMAP_Z0   = REPO / "output-files" / "PSGRID4D_CONFOCAL_FINE_Z0.h5"
+DEFAULT_PSMAP_Z100 = REPO / "output-files" / "PSGRID4D_CONFOCAL_FINE_Z100.h5"
+
+# Initialization constants for sigma parameters (used as starting point only;
+# the optimizer infers the true values from data).
+INIT_SIGMA_POS     = 100e-6   # m    — centre for sigma_x0, sigma_y0
+INIT_SIGMA_VEL     = 100e-6   # m/s  — centre for sigma_vx0, sigma_vy0
+INIT_SIGMA_POS_STD = 20e-6    # m    — spread for random restarts
+INIT_SIGMA_VEL_STD = 20e-6    # m/s
 
 
 # ── GPU evaluator for one AI ───────────────────────────────────────────────────
@@ -147,10 +167,9 @@ class SurrogatePixelACS:
         # Stack all ports into (nP, nx, ny, nvx, nvy) tensors so the Python
         # for-loop over ports is eliminated; a single gather handles all ports.
         nP = surrogate.nP
-        self._dphi_stack = cp.stack(surrogate._gpu_dphi_resid)  # (nP, nx, ny, nvx, nvy)
+        self._dphi_stack = cp.stack(surrogate._gpu_dphi)  # (nP, nx, ny, nvx, nvy)
         self._amp0_stack = cp.stack(surrogate._gpu_amp0)
         self._amp1_stack = cp.stack(surrogate._gpu_amp1)
-        self._dphi_linear = cp.asarray(surrogate._dphi_linear, dtype=cp.float64)  # (nP,5)
         self._port_inter  = cp.asarray(surrogate.port_interfering, dtype=cp.float64)
         self.nP = nP
 
@@ -234,16 +253,9 @@ class SurrogatePixelACS:
             corners = stack[pi_idx, ix_e, iy_e, ivx_e, ivy_e]     # (nP, 256, n_quad)
             return (corners * w[None]).sum(1)                       # (nP, n_quad)
 
-        dphi_resid = _gather_sum(self._dphi_stack)    # (nP, n_quad)
-        amp0_out   = _gather_sum(self._amp0_stack).T  # (n_quad, nP)
-        amp1_out   = _gather_sum(self._amp1_stack).T
-
-        # Add linear phase trend: _dphi_linear is (nP, 5) — [c0,cx,cy,cvx,cvy]
-        c = self._dphi_linear  # (nP, 5)
-        dphi_out = (dphi_resid
-                    + c[:, 0:1]
-                    + c[:, 1:2]*x0_g[None] + c[:, 2:3]*y0_g[None]
-                    + c[:, 3:4]*vx0_g[None] + c[:, 4:5]*vy0_g[None]).T  # (n_quad, nP)
+        dphi_out = _gather_sum(self._dphi_stack).T  # (n_quad, nP)
+        amp0_out = _gather_sum(self._amp0_stack).T  # (n_quad, nP)
+        amp1_out = _gather_sum(self._amp1_stack).T
 
         return dphi_out, amp0_out, amp1_out
 
@@ -327,9 +339,15 @@ class SemiAnalyticPixelACS:
     n_gh : int
         GH order per velocity dimension.  Total PSMAP evaluations per
         pixel_acs() call: n_bins * n_gh^2.  Default 20 (400 per pixel).
+    chunk_bins : int
+        Number of pixels processed per _eval_fast call.  The peak GPU
+        intermediate size scales as 256 × chunk_bins × n_gh² × 8 bytes.
+        With chunk_bins=64, n_gh=20: peak ≈ 52 MB per intermediate.
+        Default 64.
     """
 
-    def __init__(self, surrogate_acs: "SurrogatePixelACS", n_gh: int = 20):
+    def __init__(self, surrogate_acs: "SurrogatePixelACS",
+                 n_gh: int = 20, chunk_bins: int = 64):
         from numpy.polynomial.hermite import hermgauss
         from scipy.special import ndtr
 
@@ -375,10 +393,11 @@ class SemiAnalyticPixelACS:
         w_gh = wi / np.sqrt(np.pi)      # (n_gh,)  weights, sum = 1
         zx, zy = np.meshgrid(z_gh, z_gh, indexing='ij')
         wx, wy = np.meshgrid(w_gh, w_gh, indexing='ij')
-        self.z2_x = cp.asarray(zx.ravel(), dtype=cp.float64)  # (n_v,)
-        self.z2_y = cp.asarray(zy.ravel(), dtype=cp.float64)
-        self.w2   = cp.asarray((wx * wy).ravel(), dtype=cp.float64)
-        self.n_v  = int(len(self.w2))   # n_gh^2
+        self.z2_x      = cp.asarray(zx.ravel(), dtype=cp.float64)  # (n_v,)
+        self.z2_y      = cp.asarray(zy.ravel(), dtype=cp.float64)
+        self.w2        = cp.asarray((wx * wy).ravel(), dtype=cp.float64)
+        self.n_v       = int(len(self.w2))   # n_gh^2
+        self.chunk_bins = int(chunk_bins)
 
     def pixel_acs(self, theta):
         """
@@ -404,9 +423,6 @@ class SemiAnalyticPixelACS:
         P_b = cp.asarray(P_x * P_y, dtype=cp.float64)  # (n_bins,) on GPU
 
         # Conditional velocity distribution at pixel centre (xb, yb)
-        # vx0 | (xf = xb) ~ N(mu_vx|xb, svx_cond)
-        #   mu_vx|xb = mu_vx + T * svx^2/sxf^2 * (xb - mu_xf)
-        #   svx_cond = svx * sx / sxf        (scalar)
         svx_c = float(svx * sx / sxf)
         svy_c = float(svy * sy / syf)
         mu_vx_cond = mu_vx + (T * svx**2 / sxf**2) * (self._xc - mu_xf)  # (n_bins,)
@@ -414,45 +430,48 @@ class SemiAnalyticPixelACS:
         mu_vx_g = cp.asarray(mu_vx_cond, dtype=cp.float64)
         mu_vy_g = cp.asarray(mu_vy_cond, dtype=cp.float64)
 
-        # Build (n_bins * n_v) evaluation points
-        # vx0[b,q] = mu_vx_cond[b] + svx_c * z2_x[q]
-        # x0 [b,q] = xc[b] - T * vx0[b,q]
-        vx0_g = (mu_vx_g[:, None] + svx_c * self.z2_x[None, :]).ravel()
-        vy0_g = (mu_vy_g[:, None] + svy_c * self.z2_y[None, :]).ravel()
-        x0_g  = (self.xc_bins[:, None] - T * (mu_vx_g[:, None]
-                  + svx_c * self.z2_x[None, :])).ravel()
-        y0_g  = (self.yc_bins[:, None] - T * (mu_vy_g[:, None]
-                  + svy_c * self.z2_y[None, :])).ravel()
+        # Chunked PSMAP evaluation: process chunk_bins pixels at a time to
+        # keep (256, chunk_bins × n_v) intermediates in _eval_fast small.
+        inter    = self._port_inter[None]
+        A_g_acc  = cp.zeros(self.n_bins, dtype=cp.float64)
+        Cc_g_acc = cp.zeros(self.n_bins, dtype=cp.float64)
+        Cs_g_acc = cp.zeros(self.n_bins, dtype=cp.float64)
+        A_e_acc  = cp.zeros(self.n_bins, dtype=cp.float64)
+        Cc_e_acc = cp.zeros(self.n_bins, dtype=cp.float64)
+        Cs_e_acc = cp.zeros(self.n_bins, dtype=cp.float64)
 
-        # PSMAP evaluation — single batched call
-        dphi_g, amp0_g, amp1_g = self._eval_fast(x0_g, y0_g, vx0_g, vy0_g)
+        for b0 in range(0, self.n_bins, self.chunk_bins):
+            b1 = min(b0 + self.chunk_bins, self.n_bins)
+            nb = b1 - b0
 
-        # ACS per evaluation point  (n_eval, nP)
-        inter  = self._port_inter[None]
-        A_per  = amp0_g**2 + amp1_g**2
-        Cc_per =  inter * 2.0 * amp0_g * amp1_g * cp.cos(dphi_g)
-        Cs_per = -inter * 2.0 * amp0_g * amp1_g * cp.sin(dphi_g)
+            mvx = mu_vx_g[b0:b1]; mvy = mu_vy_g[b0:b1]
+            xcb = self.xc_bins[b0:b1]; ycb = self.yc_bins[b0:b1]
 
-        Am_g_e = A_per [:, self.s0_g].sum(-1)   # (n_eval,)
-        Ac_g_e = Cc_per[:, self.s0_g].sum(-1)
-        As_g_e = Cs_per[:, self.s0_g].sum(-1)
-        Am_e_e = A_per [:, self.s1_g].sum(-1)
-        Ac_e_e = Cc_per[:, self.s1_g].sum(-1)
-        As_e_e = Cs_per[:, self.s1_g].sum(-1)
+            vx0 = (mvx[:, None] + svx_c * self.z2_x[None, :]).ravel()
+            vy0 = (mvy[:, None] + svy_c * self.z2_y[None, :]).ravel()
+            x0  = (xcb[:, None] - T * (mvx[:, None] + svx_c * self.z2_x[None, :])).ravel()
+            y0  = (ycb[:, None] - T * (mvy[:, None] + svy_c * self.z2_y[None, :])).ravel()
 
-        # GH-weighted average per pixel: (n_eval,) → (n_bins, n_v) → (n_bins,)
-        def _gh(v):
-            return (v.reshape(self.n_bins, self.n_v) * self.w2[None, :]).sum(1)
+            dphi, amp0, amp1 = self._eval_fast(x0, y0, vx0, vy0)
 
-        # Multiply by spatial weight
-        A_g  = P_b * _gh(Am_g_e)
-        Cc_g = P_b * _gh(Ac_g_e)
-        Cs_g = P_b * _gh(As_g_e)
-        A_e  = P_b * _gh(Am_e_e)
-        Cc_e = P_b * _gh(Ac_e_e)
-        Cs_e = P_b * _gh(As_e_e)
+            A_per  = amp0**2 + amp1**2
+            Cc_per =  inter * 2.0 * amp0 * amp1 * cp.cos(dphi)
+            Cs_per = -inter * 2.0 * amp0 * amp1 * cp.sin(dphi)
+            del dphi, amp0, amp1
 
-        return A_g, Cc_g, Cs_g, A_e, Cc_e, Cs_e
+            def _gh(v, n=nb):
+                return (v.reshape(n, self.n_v) * self.w2[None, :]).sum(1)
+
+            A_g_acc [b0:b1] = _gh(A_per [:, self.s0_g].sum(-1))
+            Cc_g_acc[b0:b1] = _gh(Cc_per[:, self.s0_g].sum(-1))
+            Cs_g_acc[b0:b1] = _gh(Cs_per[:, self.s0_g].sum(-1))
+            A_e_acc [b0:b1] = _gh(A_per [:, self.s1_g].sum(-1))
+            Cc_e_acc[b0:b1] = _gh(Cc_per[:, self.s1_g].sum(-1))
+            Cs_e_acc[b0:b1] = _gh(Cs_per[:, self.s1_g].sum(-1))
+            del A_per, Cc_per, Cs_per
+
+        return (P_b * A_g_acc,  P_b * Cc_g_acc, P_b * Cs_g_acc,
+                P_b * A_e_acc,  P_b * Cc_e_acc, P_b * Cs_e_acc)
 
 
 # ── Joint phi-marginalised logL ────────────────────────────────────────────────
@@ -558,7 +577,7 @@ class ShotObjective:
     """Negative log-likelihood for one shot, callable by scipy.optimize."""
 
     def __init__(self, n_g_z0, n_e_z0, n_g_z100, n_e_z100,
-                 eval_z0: SurrogatePixelACS, eval_z100: SurrogatePixelACS,
+                 eval_z0: SemiAnalyticPixelACS, eval_z100: SemiAnalyticPixelACS,
                  n_theta: int, xp, lse_fn):
         self.xp = xp
         self.n_g_z0   = xp.asarray(n_g_z0.astype(np.float64))
@@ -599,24 +618,24 @@ def _downsample(img, bins):
     return img.reshape(2, bins, b, bins, b).sum(axis=(2, 4)).astype(np.float64)
 
 
-def _moment_init(img2d, centers, default_sigma_x0, default_sigma_y0,
-                 default_sigma_vx0, default_sigma_vy0):
-    """
-    Image-moment initialisation.  Returns theta = [mu_x0≈mu_xf, mu_y0≈mu_yf,
-    0, 0, sigma_x0_default, sigma_y0_default, sigma_vx0_default, sigma_vy0_default].
-    """
-    total = float(img2d.sum())
-    if total <= 0:
-        return np.array([0., 0., 0., 0.,
-                         default_sigma_x0, default_sigma_y0,
-                         default_sigma_vx0, default_sigma_vy0])
-    nc, nr = img2d.shape
-    xc = centers[:, None]; yc = centers[None, :]
-    mu_xf = float((img2d * xc).sum() / total)
-    mu_yf = float((img2d * yc).sum() / total)
-    return np.array([mu_xf, mu_yf, 0., 0.,
-                     default_sigma_x0, default_sigma_y0,
-                     default_sigma_vx0, default_sigma_vy0])
+def _prior_mean():
+    """Prior-mean initialisation: COM offsets zero, sigma at hardcoded centre."""
+    return np.array([0., 0., 0., 0.,
+                     INIT_SIGMA_POS, INIT_SIGMA_POS,
+                     INIT_SIGMA_VEL, INIT_SIGMA_VEL])
+
+
+def _prior_sample(rng, mu_pos_std, mu_vel_std):
+    """Draw one theta sample from the prior."""
+    mu_x0  = rng.normal(0.0, mu_pos_std)
+    mu_y0  = rng.normal(0.0, mu_pos_std)
+    mu_vx0 = rng.normal(0.0, mu_vel_std)
+    mu_vy0 = rng.normal(0.0, mu_vel_std)
+    sx0  = max(rng.normal(INIT_SIGMA_POS, INIT_SIGMA_POS_STD), 1e-6)
+    sy0  = max(rng.normal(INIT_SIGMA_POS, INIT_SIGMA_POS_STD), 1e-6)
+    svx0 = max(rng.normal(INIT_SIGMA_VEL, INIT_SIGMA_VEL_STD), 1e-6)
+    svy0 = max(rng.normal(INIT_SIGMA_VEL, INIT_SIGMA_VEL_STD), 1e-6)
+    return np.array([mu_x0, mu_y0, mu_vx0, mu_vy0, sx0, sy0, svx0, svy0])
 
 
 def _setup_logging(log_path):
@@ -643,17 +662,31 @@ def parse_args():
     p.add_argument("--run-idx", type=int, default=0)
     p.add_argument("--psmap-z0",   type=Path, default=DEFAULT_PSMAP_Z0)
     p.add_argument("--psmap-z100", type=Path, default=DEFAULT_PSMAP_Z100)
-    p.add_argument("--bins",    type=int,   default=32)
+    p.add_argument("--bins",    type=int,   default=32,
+                   help="Inference image resolution (bins×bins pixels). Controls "
+                        "spatial downsampling; GH cost scales as bins² × n_gh². "
+                        "(default: 32)")
     p.add_argument("--ntheta",  type=int,   default=512)
-    p.add_argument("--n-quad",  type=int,   default=20_000,
-                   help="QMC quadrature points per theta eval. (default: 20000)")
+    p.add_argument("--n-gh",       type=int,   default=20,
+                   help="Gauss-Hermite order per velocity dimension. "
+                        "Total PSMAP evals per pixel_acs(): n_bins × n_gh². "
+                        "(default: 20)")
+    p.add_argument("--chunk-bins", type=int,   default=64,
+                   help="Pixels processed per GPU call. Peak GPU memory per "
+                        "intermediate ∝ 256 × chunk_bins × n_gh². (default: 64)")
     p.add_argument("--max-shots", type=int, default=None)
     p.add_argument("--shot-start", type=int, default=0)
-    # Default sigma for warm-start (overridden by --init-from-true)
-    p.add_argument("--sigma-x0",  type=float, default=100e-6)
-    p.add_argument("--sigma-y0",  type=float, default=100e-6)
-    p.add_argument("--sigma-vx0", type=float, default=309e-6)
-    p.add_argument("--sigma-vy0", type=float, default=309e-6)
+    # Prior std for COM parameters — used only for random restarts (--n-init > 1)
+    p.add_argument("--mu-pos-std", type=float, default=10e-6,
+                   help="Prior std on mu_x0, mu_y0 [m]. (default: 10µm)")
+    p.add_argument("--mu-vel-std", type=float, default=10e-6,
+                   help="Prior std on mu_vx0, mu_vy0 [m/s]. (default: 10µm/s)")
+    # Multi-start
+    p.add_argument("--n-init", type=int, default=1,
+                   help="Number of optimisation starts. First is prior mean; "
+                        "additional starts are iid samples from the prior. (default: 1)")
+    p.add_argument("--seed",   type=int, default=0,
+                   help="RNG seed for prior samples (default: 0; shot_id is added).")
     # Optimiser
     p.add_argument("--maxiter",          type=int,   default=2000)
     p.add_argument("--fatol",            type=float, default=0.5,
@@ -692,8 +725,8 @@ def main():
     _setup_logging(log_path)
 
     logging.info("profile_cloud_nuisances.py  run=%s  run_idx=%d", run_stem, args.run_idx)
-    logging.info("GPU=%s  bins=%d  ntheta=%d  n_quad=%d  maxiter=%d  n_params=16",
-                 use_gpu, args.bins, args.ntheta, args.n_quad, args.maxiter)
+    logging.info("GPU=%s  bins=%d  ntheta=%d  n_gh=%d  n_init=%d  maxiter=%d  n_params=16",
+                 use_gpu, args.bins, args.ntheta, args.n_gh, args.n_init, args.maxiter)
 
     run_dir  = run_path / f"run_{args.run_idx:03d}"
     ds_z0    = ImageShotDataset(str(run_dir / "Z0"   / "data_IMG.h5"))
@@ -707,15 +740,19 @@ def main():
     if ds_z0.res % args.bins:
         raise ValueError(f"Image res {ds_z0.res} not divisible by bins {args.bins}")
 
-    logging.info("Loading PSMAPs and building GPU surrogate evaluators (n_quad=%d)...",
-                 args.n_quad)
+    logging.info("Loading PSMAPs and building semi-analytic GH evaluators (n_gh=%d)...",
+                 args.n_gh)
     t0 = time.perf_counter()
     sur_z0   = PSMAPSurrogate(load_psmap(str(args.psmap_z0)),   T_DET, use_gpu=use_gpu)
     sur_z100 = PSMAPSurrogate(load_psmap(str(args.psmap_z100)), T_DET, use_gpu=use_gpu)
-    eval_z0   = SurrogatePixelACS(sur_z0,   T_DET, edges, edges, n_quad=args.n_quad)
-    eval_z100 = SurrogatePixelACS(sur_z100, T_DET, edges, edges, n_quad=args.n_quad)
-    logging.info("Evaluators ready in %.1fs  n_bins=%d",
-                 time.perf_counter() - t0, eval_z0.n_bins)
+    # SurrogatePixelACS provides the GPU Catmull-Rom infrastructure reused by
+    # SemiAnalyticPixelACS; built with n_quad=1 since QMC path is not used.
+    _base_z0   = SurrogatePixelACS(sur_z0,   T_DET, edges, edges, n_quad=1)
+    _base_z100 = SurrogatePixelACS(sur_z100, T_DET, edges, edges, n_quad=1)
+    eval_z0   = SemiAnalyticPixelACS(_base_z0,   n_gh=args.n_gh, chunk_bins=args.chunk_bins)
+    eval_z100 = SemiAnalyticPixelACS(_base_z100, n_gh=args.n_gh, chunk_bins=args.chunk_bins)
+    logging.info("Evaluators ready in %.1fs  n_bins=%d  gh_pts_per_pixel=%d",
+                 time.perf_counter() - t0, eval_z0.n_bins, eval_z0.n_v)
 
     shot_ids = list(range(args.shot_start, ds_z0.n_shots))
     if args.max_shots is not None:
@@ -744,37 +781,45 @@ def main():
         obj = ShotObjective(n_g_z0, n_e_z0, n_g_z100, n_e_z100,
                             eval_z0, eval_z100, args.ntheta, xp, lse_fn)
 
-        # ── Initialisation ───────────────────────────────────────────────
+        # ── Build starting points ────────────────────────────────────────
         if args.init_from_true:
-            t_init_z0   = theta_true_z0.copy()
-            t_init_z100 = theta_true_z100.copy()
+            starts = [(theta_true_z0.copy(), theta_true_z100.copy())]
         else:
-            t_init_z0   = _moment_init(
-                img_z0[0] + img_z0[1], centers,
-                args.sigma_x0, args.sigma_y0, args.sigma_vx0, args.sigma_vy0)
-            t_init_z100 = _moment_init(
-                img_z100[0] + img_z100[1], centers,
-                args.sigma_x0, args.sigma_y0, args.sigma_vx0, args.sigma_vy0)
+            pm = _prior_mean()
+            starts = [(pm.copy(), pm.copy())]
+            if args.n_init > 1:
+                rng = np.random.default_rng(args.seed + shot_id)
+                for _ in range(args.n_init - 1):
+                    starts.append((_prior_sample(rng, args.mu_pos_std, args.mu_vel_std),
+                                   _prior_sample(rng, args.mu_pos_std, args.mu_vel_std)))
 
-        p0 = _encode(t_init_z0, t_init_z100)   # (16,)
-
-        # ── Optimise ─────────────────────────────────────────────────────
+        # ── Multi-start optimisation ──────────────────────────────────────
         bounds = _build_bounds(
             ds_z0.half_range,
             sigma_pos_max=args.sigma_pos_max,
             sigma_vel_max=args.sigma_vel_max,
             com_vel_max=args.com_vel_max,
         )
-        # L-BFGS-B supports bounds; prevents optimizer escaping along
-        # the flat sigma_x0/sigma_vx0 degeneracy ridge to unphysical values.
-        ll0 = -float(obj(p0))
-        opt = minimize(obj, p0, method="L-BFGS-B",
-                       bounds=bounds,
-                       options={"maxiter": args.maxiter,
-                                "ftol": args.fatol / max(abs(ll0), 1.0),
-                                "gtol": 1e-8})
-        theta_hat_z0, theta_hat_z100 = _decode(opt.x)
-        logL_hat  = -float(opt.fun)
+        best_logL = -np.inf
+        best_opt  = None
+        best_theta_z0 = best_theta_z100 = None
+        total_nfev = 0
+
+        for t0_z0, t0_z100 in starts:
+            p0  = _encode(t0_z0, t0_z100)
+            ll0 = -float(obj(p0))
+            opt = minimize(obj, p0, method="L-BFGS-B",
+                           bounds=bounds,
+                           options={"maxiter": args.maxiter,
+                                    "ftol": args.fatol / max(abs(ll0), 1.0),
+                                    "gtol": 1e-8})
+            total_nfev += int(opt.nfev)
+            if -float(opt.fun) > best_logL:
+                best_logL = -float(opt.fun)
+                best_opt  = opt
+                best_theta_z0, best_theta_z100 = _decode(opt.x)
+
+        logL_hat  = best_logL
         logL_true = obj.logL_true(theta_true_z0, theta_true_z100)
 
         elapsed = time.perf_counter() - t_shot
@@ -785,17 +830,18 @@ def main():
             "logL_hat":   logL_hat,
             "logL_true":  logL_true,
             "delta_logL": logL_hat - logL_true,
-            "nfev":       int(opt.nfev),
-            "nit":        int(opt.nit),
-            "success":    bool(opt.success),
-            "message":    str(opt.message),
+            "nfev":       total_nfev,
+            "nit":        int(best_opt.nit),
+            "n_init":     len(starts),
+            "success":    bool(best_opt.success),
+            "message":    str(best_opt.message),
             "elapsed_s":  round(elapsed, 2),
             "run_name":   run_stem,
             "run_idx":    args.run_idx,
         }
         for ai, (theta_hat, theta_true) in [
-            ("z0",  (theta_hat_z0,  theta_true_z0)),
-            ("z100",(theta_hat_z100, theta_true_z100)),
+            ("z0",  (best_theta_z0,  theta_true_z0)),
+            ("z100",(best_theta_z100, theta_true_z100)),
         ]:
             for name, v_hat, v_true in zip(PARAM_NAMES, theta_hat, theta_true):
                 row[f"{name}_{ai}_hat"]  = float(v_hat)

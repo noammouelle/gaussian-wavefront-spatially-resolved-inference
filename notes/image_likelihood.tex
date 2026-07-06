@@ -394,6 +394,881 @@ Two strategies are supported:
 \end{itemize}
 
 %%============================================================
+\section{Alternative: Moment-Based Cloud Marginalisation}
+\label{sec:moments}
+%%============================================================
+
+\subsection{Motivation}
+
+The profiling strategy of Section~\ref{sec:nuisances} finds a single
+$\hat\eta_{iz}$ per shot and fixes it.  This is valid when the likelihood is
+sharply peaked in $\eta$, but empirical multi-start optimisation
+(Section~\ref{sec:impl}) reveals that the likelihood surface has extended
+\emph{ridges} in $\eta$-space, arising from ballistic degeneracies
+(Section~\ref{sec:ridges}).  Fixing $\hat\eta$ at one point on a ridge
+introduces a systematic error in the marginalised signal posterior.
+
+This section develops an alternative that replaces the per-pixel likelihood
+over all $N_b$ bins with a likelihood over a small set of image
+\emph{moments}, enabling an analytic posterior $p(\eta|m)$ that concentrates
+mass on the ridge and can be used as a proposal or prior for a proper
+marginalisation over $\eta$.
+
+\subsection{Ballistic Degeneracies and Ridge Structure}
+\label{sec:ridges}
+
+Under free-flight propagation~\eqref{eq:ballistic} the final-plane Gaussian
+parameters are related to the initial ones by
+\begin{align}
+  \mu_{xf}   &= \mu_{x_0} + T_\mathrm{det}\,\mu_{v_x},
+  \label{eq:mu_ballistic}\\
+  \sigma^2_{xf} &= \sigma^2_{x_0} + T_\mathrm{det}^2\,\sigma^2_{v_x},
+  \label{eq:sig_ballistic}
+\end{align}
+and identically for $y$.  The cloud image is predominantly determined by the
+four \emph{final} moments $(\mu_{xf}, \mu_{yf}, \sigma_{xf}, \sigma_{yf})$.
+Each of~\eqref{eq:mu_ballistic}--\eqref{eq:sig_ballistic} is a constraint
+relating two initial parameters to one observable, leaving a one-dimensional
+family of initial conditions consistent with any given image.  In
+$(\mu_{x_0}, \mu_{v_x})$ space this is the line
+$\mu_{x_0} + T_\mathrm{det}\,\mu_{v_x} = \mu_{xf}$; in
+$(\sigma_{x_0},\sigma_{v_x})$ space it is the ellipse
+$\sigma^2_{x_0} + T_\mathrm{det}^2\sigma^2_{v_x} = \sigma^2_{xf}$.  These
+are precisely the ridges observed empirically.
+
+\subsection{Summary Statistics and the Key Decomposition}
+
+\paragraph{Total-count image.}
+Define the per-pixel sum over output states
+\begin{equation}
+  m_b^{(iz)} = n_{izgb} + n_{izeb},
+  \label{eq:mtot}
+\end{equation}
+and define the scalar image moments
+\begin{align}
+  N_z     &= \textstyle\sum_b m_b^{(iz)},
+  \label{eq:Nz}\\
+  \hat\mu_{xf} &= N_z^{-1}\textstyle\sum_b x_b\,m_b^{(iz)},
+  \label{eq:muxf}\\
+  \hat\sigma^2_{xf} &= N_z^{-1}\textstyle\sum_b (x_b - \hat\mu_{xf})^2\,m_b^{(iz)},
+  \label{eq:sigxf}
+\end{align}
+and analogously $\hat\mu_{yf}$, $\hat\sigma^2_{yf}$.
+We collect these into $m = (N_z, \hat\mu_{xf}, \hat\sigma^2_{xf}, \hat\mu_{yf},
+\hat\sigma^2_{yf})$.
+
+\paragraph{Science parameters do not enter $m$.}
+The expected total-count rate at pixel $b$ is
+\begin{equation}
+  \E[m_b^{(iz)}]
+  = L_{iz}\bigl[(A_{zgb}+A_{zeb})
+    + (C^c_{zgb}+C^c_{zeb})\cos\Phi
+    + (C^s_{zgb}+C^s_{zeb})\sin\Phi\bigr].
+  \label{eq:Emtot}
+\end{equation}
+In a balanced two-path interferometer the output ports are complementary:
+atoms transmitted into the ground port are not transmitted into the excited port,
+so $A_{zgb}+A_{zeb} \approx \text{const}$ and
+\begin{equation}
+  C^c_{zgb}+C^c_{zeb} \approx 0,\qquad C^s_{zgb}+C^s_{zeb} \approx 0.
+  \label{eq:complementarity}
+\end{equation}
+Therefore $\E[m_b^{(iz)}] \approx L_{iz}(A_{zgb}+A_{zeb})$, independent of
+the total AI phase $\Phi$ and hence independent of both the laser phase
+$\phi_i$ and the science signal $\beta = (A_s, A_c)$.  Consequently,
+\begin{equation}
+  \boxed{p(m \mid \eta,\,\beta,\,\phi_i) = p(m \mid \eta)}
+  \label{eq:marg_key}
+\end{equation}
+exactly to the extent that~\eqref{eq:complementarity} holds.  The moments
+are a sufficient statistic for $\eta$ that carries \emph{zero} information
+about $\beta$.  This decomposition is not an approximation: the science signal
+$\delta\phi_i(\beta)$ and the laser phase $\phi_i$ both enter the image
+exclusively through the interference terms $C^c\cos\Phi + C^s\sin\Phi$,
+which cancel in the port sum.
+
+\subsection{Moment Likelihood $p(m \mid \eta)$}
+
+Under~\eqref{eq:complementarity} the total-count image is a 2D Poisson
+process with pixel rates $\lambda_b = L_{iz}\,A^{tot}_{zb}(\eta)$, where
+$A^{tot}_{zb} = A_{zgb}+A_{zeb}$.  For the cloud model of
+Section~\ref{sec:nuisances}, $A^{tot}_{zb}(\eta)$ is proportional to the
+probability that a Gaussian-distributed atom lands in pixel $b$ at
+detection time.
+
+By the central limit theorem for large $N_z$, the sample moments converge to
+\begin{align}
+  \hat\mu_{xf} \mid \eta
+  &\;\sim\; \mathcal{N}\!\Bigl(\mu_{xf}(\eta),\;\frac{\sigma^2_{xf}(\eta)}{N_z}\Bigr),
+  \label{eq:mu_lik}\\
+  \hat\sigma^2_{xf} \mid \eta
+  &\;\sim\; \mathcal{N}\!\Bigl(\sigma^2_{xf}(\eta),\;\frac{2\,\sigma^4_{xf}(\eta)}{N_z}\Bigr),
+  \label{eq:sig_lik}
+\end{align}
+and identically for $y$.  All four are independent.  The forward model
+is~\eqref{eq:mu_ballistic}--\eqref{eq:sig_ballistic} with $N_z$ known from
+the observed total count and $\sigma^2_{xf}$ estimated from the data
+(replacing the true value in the noise variance by its estimate introduces
+a negligible bias at large $N_z$).
+
+\paragraph{Assumption: PSMAP undetectable in image moments.}
+Equation~\eqref{eq:complementarity} is exact when port probabilities sum
+to one.  In practice, paths are pruned (Section~2.2), so the fringe terms
+do not cancel perfectly.  The residual fringe contrast is
+$\epsilon_\mathrm{fringe} = |C^c_{zb}+C^c_{z(e)b}|/(A^{tot}_{zb}) \ll 1$.
+Furthermore, the spatially varying phase $\Delta\phi_p(\q_0)$ (the PSMAP
+contribution) averages over the cloud and partially cancels in the moment
+integrals.  We assume this residual is negligible compared with the Poisson
+uncertainty $1/\sqrt{N_z}$ on the moments, i.e.\ the PSMAP fringe structure
+is undetectable in the image given the available atom number.
+Under this assumption~\eqref{eq:marg_key} holds exactly and the
+moment-based approach is not an approximation but an alternative sufficient
+statistic.
+
+\subsection{Analytic Posterior $p(\eta \mid m)$}
+
+\subsubsection{Mean Parameters}
+
+Consider the $x$-direction means $\theta_\mu = (\mu_{x_0}, \mu_{v_x})^\top$.
+The observation model~\eqref{eq:mu_lik} combined with the
+prior~\eqref{eq:prior} takes the form of a linear Gaussian model:
+\begin{equation}
+  \hat\mu_{xf} = \mathbf{h}^\top \theta_\mu + \epsilon,\qquad
+  \mathbf{h} = \begin{pmatrix}1 \\ T_\mathrm{det}\end{pmatrix},\qquad
+  \epsilon \sim \mathcal{N}(0, R_x),\quad
+  R_x = \frac{\hat\sigma^2_{xf}}{N_z},
+  \label{eq:linmod}
+\end{equation}
+with Gaussian prior $\theta_\mu \sim \mathcal{N}(\mathbf{0}, \mathbf{P}_0)$,
+$\mathbf{P}_0 = \mathrm{diag}(\sigma^2_{\mu,\mathrm{pos}},\sigma^2_{\mu,\mathrm{vel}})$.
+The posterior is analytic (standard Bayesian linear regression / Kalman update):
+\begin{align}
+  \mathbf{K}    &= \mathbf{P}_0\,\mathbf{h}
+                   \bigl(\mathbf{h}^\top\mathbf{P}_0\,\mathbf{h} + R_x\bigr)^{-1},
+  \label{eq:Kgain}\\
+  \boldsymbol{\mu}_\mathrm{post} &= \mathbf{K}\,\hat\mu_{xf},
+  \label{eq:mu_post}\\
+  \mathbf{P}_\mathrm{post} &= (\mathbf{I} - \mathbf{K}\mathbf{h}^\top)\,\mathbf{P}_0.
+  \label{eq:P_post}
+\end{align}
+The posterior $\theta_\mu \mid \hat\mu_{xf} \sim \mathcal{N}(\boldsymbol{\mu}_\mathrm{post},
+\mathbf{P}_\mathrm{post})$ is a 2D Gaussian with $\mathbf{P}_\mathrm{post}$ having
+one very small eigenvalue (the direction pinned by the constraint
+$\mu_{x_0}+T_\mathrm{det}\mu_{v_x}=\hat\mu_{xf}$) and one larger eigenvalue
+(the unconstrained direction along the ridge).
+An identical update applies to $(\mu_{y_0}, \mu_{v_y})$ using $\hat\mu_{yf}$.
+
+\subsubsection{Width Parameters}
+
+Define the squared widths $s_x = \sigma^2_{x_0}$, $s_{vx} = \sigma^2_{v_x}$.
+The observation model~\eqref{eq:sig_lik} becomes
+\begin{equation}
+  \hat\sigma^2_{xf} = s_x + T_\mathrm{det}^2\,s_{vx} + \epsilon_\sigma,\qquad
+  \epsilon_\sigma \sim \mathcal{N}(0, R_\sigma),\quad
+  R_\sigma = \frac{2\,\hat\sigma^4_{xf}}{N_z}.
+  \label{eq:linmod_sig}
+\end{equation}
+This is linear in $(s_x, s_{vx})$, so the Kalman update~\eqref{eq:Kgain}--\eqref{eq:P_post}
+applies with $\mathbf{h} = (1,\, T_\mathrm{det}^2)^\top$ and prior variance
+on $(s_x, s_{vx})$ derived from~\eqref{eq:prior} by the delta method.
+The non-negativity constraints $s_x, s_{vx} \ge 0$ truncate the posterior;
+the truncation is negligible when the prior is well away from zero.
+
+\paragraph{Dominant-velocity-spread regime.}
+In the MAGIS-100 setup ($T_\mathrm{det}=3.8$\,s, $\sigma_{v_x}\sim 100$--$309\,\mu$m/s),
+$T_\mathrm{det}\,\sigma_{v_x} \sim 380$--$1170\,\mu$m $\gg \sigma_{x_0}\sim 100\,\mu$m.
+Expanding~\eqref{eq:sig_ballistic} to first order in $\sigma_{x_0}/\sigma_{xf}$:
+\begin{equation}
+  \sigma_{xf} \approx T_\mathrm{det}\,\sigma_{v_x}
+  + \frac{\sigma^2_{x_0}}{2\,T_\mathrm{det}\,\sigma_{v_x}}.
+  \label{eq:sig_expand}
+\end{equation}
+To leading order $\sigma_{v_x} \approx \hat\sigma_{xf}/T_\mathrm{det}$ is
+directly observed, while $\sigma_{x_0}$ enters only as a small correction and
+is poorly constrained by the image alone.  The posterior on $\sigma_{v_x}$
+is therefore narrow ($\propto$ width of the Kalman update~\eqref{eq:P_post}),
+while the posterior on $\sigma_{x_0}$ remains broad, reflecting its
+unidentifiability from a single-epoch image.
+
+\subsection{Marginalization via the Moment Posterior}
+
+The moment posterior factorises as
+\begin{equation}
+  p(\eta \mid m)
+  = p(\mu_{x_0},\mu_{v_x} \mid \hat\mu_{xf})
+  \cdot p(\mu_{y_0},\mu_{v_y} \mid \hat\mu_{yf})
+  \cdot p(\sigma^2_{x_0},\sigma^2_{v_x} \mid \hat\sigma^2_{xf})
+  \cdot p(\sigma^2_{y_0},\sigma^2_{v_y} \mid \hat\sigma^2_{yf}),
+  \label{eq:factorize}
+\end{equation}
+each factor being an analytic Gaussian (or truncated Gaussian) derived above.
+
+The signal posterior is then
+\begin{equation}
+  p(\beta \mid \text{data})
+  \;\propto\;
+  \int d\eta\;
+  p(\text{data} \mid \beta, \eta)\;
+  p(\eta \mid m).
+  \label{eq:marg_moment}
+\end{equation}
+This integral has two key advantages over the full marginalisation with
+prior $p(\eta)$:
+
+\begin{enumerate}
+  \item \textbf{Constrained support.}  $p(\eta \mid m)$ concentrates mass on a
+        4-dimensional manifold (the four ballistic ridges) rather than
+        spanning the full 8D prior volume.  The effective sample size required
+        for accurate Monte Carlo integration is thus dramatically reduced.
+
+  \item \textbf{Analytic sampler.}  Samples $\eta_i \sim p(\eta \mid m)$ are
+        free: draw from four independent 2D Gaussians.  No PSMAP evaluation
+        is needed to generate starting points.
+\end{enumerate}
+
+\paragraph{Double-counting note.}
+The moments $m$ are computed from the same data used in $p(\text{data}|\beta,\eta)$.
+Double-counting is avoided because~\eqref{eq:marg_key} guarantees that $m$
+carries no information about $\beta$: the moment channel is orthogonal to
+the signal channel.  The only overlap is between $m$ and the cloud channel
+of $p(\text{data}|\beta,\eta)$ — but this overlap vanishes by the
+assumption that the PSMAP fringe is undetectable in the moments.  When this
+assumption is not exact, one should use importance sampling to correct for
+it (see Section~\ref{sec:is}).
+
+\subsection{Analytical R\,=\,0 Limit: Dimension Reduction to a Point Estimate}
+\label{sec:r0}
+
+A practically important special case arises when we treat the sample moments
+as \emph{exact} observations — i.e.\ set the measurement noise to zero
+($R_x = R_\sigma = 0$ in~\eqref{eq:linmod}--\eqref{eq:linmod_sig}).
+This is justified when $N_z \gg 1$ so that the CLT variance of the sample
+moments is negligible relative to the prior spread.
+
+\paragraph{R=0 Kalman posterior.}
+Setting $R_x \to 0$, the Kalman gain in~\eqref{eq:Kgain} satisfies
+\[
+  \mathbf{K} \;\to\; \frac{\mathbf{P}_0\,\mathbf{h}}{\mathbf{h}^\top\mathbf{P}_0\,\mathbf{h}},
+\]
+and the posterior covariance $\mathbf{P}_\mathrm{post} \to \mathbf{P}_0 -
+\mathbf{P}_0\,\mathbf{h}\,\mathbf{h}^\top\mathbf{P}_0 / (\mathbf{h}^\top\mathbf{P}_0\,\mathbf{h})$
+is \emph{rank-deficient}: it has a zero eigenvalue in the $\mathbf{h}$ direction.
+The posterior is a degenerate Gaussian — a delta function in the constraint direction
+$\mathbf{h}^\top\theta = z$ (the ballistic manifold), and a 1D Gaussian in the
+orthogonal (ridge) direction.
+
+\paragraph{Dimension reduction.}
+Each of the four 2D blocks
+$(\mu_{x_0}, \mu_{v_x})$, $(\mu_{y_0}, \mu_{v_y})$,
+$(\sigma^2_{x_0}, \sigma^2_{v_x})$, $(\sigma^2_{y_0}, \sigma^2_{v_y})$
+has one degree of freedom eliminated by its R=0 constraint.  The full
+8-dimensional nuisance space $\eta \in \mathbb{R}^8$ collapses to a
+\textbf{4-dimensional} product of ridge manifolds:
+\begin{equation}
+  \{\eta : \mu_{x_0}+T\mu_{v_x} = \hat\mu_{xf}\}
+  \;\times\;
+  \{\eta : \mu_{y_0}+T\mu_{v_y} = \hat\mu_{yf}\}
+  \;\times\;
+  \{\eta : \sigma^2_{x_0}+T^2\sigma^2_{v_x} = \hat\sigma^2_{xf}\}
+  \;\times\;
+  \{\eta : \sigma^2_{y_0}+T^2\sigma^2_{v_y} = \hat\sigma^2_{yf}\}.
+  \label{eq:ridge4d}
+\end{equation}
+The marginal~\eqref{eq:marg_moment} thus reduces to a \emph{4D integral}
+over these four ridges.
+
+\paragraph{Point-estimate approximation (zero integration).}
+If we further approximate the marginal by evaluating the likelihood at a
+\emph{single} representative point per ridge — the posterior mean,
+which is the minimum-prior-cost point on each constraint manifold — the
+integral reduces to a scalar evaluation.  For the mean block with diagonal
+prior $P_0 = \mathrm{diag}(\tau_\mathrm{pos}^2, \tau_\mathrm{vel}^2)$
+and measurement $\hat\mu_{xf}$ (exact), this gives:
+\begin{equation}
+  \hat\mu_{x_0} =
+    \frac{\tau_\mathrm{pos}^2}{\tau_\mathrm{pos}^2 + T^2\,\tau_\mathrm{vel}^2}
+    \,\hat\mu_{xf},
+  \qquad
+  \hat\mu_{v_x} =
+    \frac{T\,\tau_\mathrm{vel}^2}{\tau_\mathrm{pos}^2 + T^2\,\tau_\mathrm{vel}^2}
+    \,\hat\mu_{xf},
+  \label{eq:r0mean}
+\end{equation}
+and analogously for $y$ and the variance blocks.  No integration or Monte Carlo
+is required.
+
+\paragraph{Bias and validity of the point estimate.}
+The true $\eta$ lies on the constraint manifold~\eqref{eq:ridge4d} but in
+general not at the minimum-norm point~\eqref{eq:r0mean}.  Using the point
+estimate therefore introduces a bias in the ACS evaluation unless the fringe
+coefficients are constant along the ridge.  Section~\ref{sec:gh4d} describes
+the unbiased 4D integral implemented in \texttt{python-scripts/moment\_inference.py}.
+
+\subsection{Importance Sampling Correction and Information Diagnostic}
+\label{sec:is}
+
+If the PSMAP fringe is not fully cancelled in the moment integrals, using
+$p(\eta|m)$ as a prior introduces a small bias.  This is corrected exactly
+by importance sampling:
+
+\begin{enumerate}
+  \item Draw $M$ samples $\eta_j \sim q(\eta) = p(\eta \mid m_\alpha)$, where
+        $m_\alpha$ is the moment posterior with covariances inflated by a
+        factor $\alpha > 1$ (e.g.\ $\alpha = 4$) to ensure the proposal has
+        heavier tails than the true posterior.
+
+  \item Evaluate the unnormalised importance weights
+        \begin{equation}
+          w_j = \frac{p(\eta_j)}{q(\eta_j)}
+              \;\propto\;
+              \frac{p(\eta_j)}{p(\eta_j \mid m_\alpha)},
+          \label{eq:isweights}
+        \end{equation}
+        which correct for using $q$ in place of the flat prior $p(\eta)$.
+
+  \item Approximate the integral~\eqref{eq:marg_moment} by
+        \begin{equation}
+          p(\beta \mid \text{data})
+          \;\propto\;
+          \sum_{j=1}^M w_j\;p(\text{data} \mid \beta, \eta_j).
+          \label{eq:isapprox}
+        \end{equation}
+\end{enumerate}
+
+\paragraph{Information diagnostic.}
+The effective sample size
+\begin{equation}
+  \mathrm{ESS} = \frac{(\sum_j w_j)^2}{\sum_j w_j^2}
+  \label{eq:ess}
+\end{equation}
+measures how much the full pixel likelihood reshapes $p(\eta)$ relative to
+$p(\eta|m)$.  If $\mathrm{ESS}/M \approx 1$, the moment posterior
+$p(\eta|m)$ is essentially the correct posterior — the PSMAP fringe structure
+adds no detectable information about $\eta$ beyond the cloud envelope moments,
+confirming the assumption of Section~\ref{sec:moments}.  If
+$\mathrm{ESS}/M \ll 1$, the PSMAP contributes additional cloud information
+and full joint inference is required.
+
+%%============================================================
+\section{4D Gauss-Hermite Moment Inference}
+\label{sec:gh4d}
+%%============================================================
+
+This section describes the complete, unbiased implementation of the R=0 ridge
+integral introduced in Section~\ref{sec:r0}.  Rather than fixing $\eta$ at the
+single minimum-norm ridge point, we integrate over all initial conditions
+consistent with the observed final moments using Gauss-Hermite quadrature with
+an analytic weight function derived from the R=0 posterior.  No per-pixel
+spatial information is used; the sufficient statistic is reduced to five scalars
+per shot per AI.
+
+\subsection{Spatially-Integrated ACS}
+\label{sec:acs_integrated}
+
+Instead of the per-pixel ACS tensors $\{A_{zsb},\,C^c_{zsb},\,C^s_{zsb}\}$ of
+Section~\ref{sec:qmc}, we work with their spatial sums,
+\begin{equation}
+  A_{zs}(\eta) = \sum_b A_{zsb}(\eta),\qquad
+  C^c_{zs}(\eta) = \sum_b C^c_{zsb}(\eta),\qquad
+  C^s_{zs}(\eta) = \sum_b C^s_{zsb}(\eta),
+  \label{eq:acs_int}
+\end{equation}
+reducing the cloud-marginalized pixel ACS to three scalars per state per AI.
+These are the expectations of the PSMAP amplitudes over the full cloud
+Gaussian, without conditioning on final position:
+\begin{align}
+  A_{zs}(\eta) &= \E_{\q_0 \sim \mathcal{N}(\eta)}
+    \!\Bigl[\textstyle\sum_{p:\,s_p=s}
+      \bigl(a_{0,p}^2(\q_0)+a_{1,p}^2(\q_0)\bigr)\Bigr],
+  \label{eq:Aint}\\[3pt]
+  C^c_{zs}(\eta) &= \E_{\q_0 \sim \mathcal{N}(\eta)}
+    \!\Bigl[\textstyle\sum_{p:\,s_p=s}
+      \iota_p\,2\,a_{0,p}(\q_0)\,a_{1,p}(\q_0)\cos\Delta\phi_p(\q_0)\Bigr],\\[3pt]
+  C^s_{zs}(\eta) &= \E_{\q_0 \sim \mathcal{N}(\eta)}
+    \!\Bigl[-\textstyle\sum_{p:\,s_p=s}
+      \iota_p\,2\,a_{0,p}(\q_0)\,a_{1,p}(\q_0)\sin\Delta\phi_p(\q_0)\Bigr].
+\end{align}
+The expected detected count for state $s$ at total phase $\Phi$ is then
+\begin{equation}
+  \lambda_{zs}(\Phi;\,\eta)
+  = \Lambda_{iz}\,\bigl[A_{zs}(\eta)+C^c_{zs}(\eta)\cos\Phi
+    +C^s_{zs}(\eta)\sin\Phi\bigr],
+  \label{eq:lambda_int}
+\end{equation}
+where $\Lambda_{iz}$ is an atom-count normalisation factor defined below.
+
+\paragraph{Monte Carlo evaluation.}
+Let $n_\mathrm{qmc}$ standard-normal deviates $\mathbf{z}_j\!\in\!\mathbb{R}^4$
+be drawn once.  Given $\eta$, the cloud samples are
+$\q_{0,j}=\mu(\eta)+\mathrm{diag}(\sigma(\eta))\,\mathbf{z}_j$.  Evaluate the
+PSMAP at all $n_\mathrm{qmc}$ points in a single batched GPU call, then
+average.  Because the samples are not conditioned on final position, the
+estimator variance is $\mathcal{O}(1/n_\mathrm{qmc})$ without the
+$1/n_\mathrm{occupied}$ binning penalty of the per-pixel estimator.  The default
+$n_\mathrm{qmc}=2048$ is sufficient because the required ACS accuracy is set by
+per-shot signal-to-noise, not per-pixel count statistics.
+
+\subsection{Port-Fraction Likelihood}
+\label{sec:port_frac}
+
+The observations per shot per AI are reduced to two scalars: total
+ground-state count $n_{izg}=\sum_b n_{izgb}$ and total excited-state count
+$n_{ize}=\sum_b n_{izeb}$, with $N_{iz}=n_{izg}+n_{ize}$.  Define
+\begin{equation}
+  A^{\rm tot}_z=A_{zg}+A_{ze},\quad
+  C^{c,\rm tot}_z=C^c_{zg}+C^c_{ze},\quad
+  C^{s,\rm tot}_z=C^s_{zg}+C^s_{ze}.
+\end{equation}
+Because path-pruning violates complementarity ($C^{c,\rm tot}_z\neq0$ in
+general), the total expected count at phase $\Phi$ is $\Phi$-dependent:
+\begin{equation}
+  \lambda^{\rm tot}_{iz}(\Phi;\,\eta)
+  = \Lambda_{iz}\bigl[A^{\rm tot}_z+C^{c,\rm tot}_z\cos\Phi
+    +C^{s,\rm tot}_z\sin\Phi\bigr].
+  \label{eq:lambda_tot}
+\end{equation}
+We normalise by choosing $\Lambda_{iz}(\Phi;\eta)$ so that the predicted total
+matches the observed total at every phase:
+\begin{equation}
+  \Lambda_{iz}(\Phi;\,\eta)
+  = \frac{N_{iz}}{A^{\rm tot}_z(\eta)+C^{c,\rm tot}_z(\eta)\cos\Phi
+    +C^{s,\rm tot}_z(\eta)\sin\Phi}.
+  \label{eq:Lphi}
+\end{equation}
+This $\Phi$-dependent normalisation eliminates the total-count channel,
+leaving the log-likelihood as a function of the port fraction only:
+\begin{align}
+  \hat\lambda_{izg}(\Phi;\,\eta)
+  &= N_{iz}\,\frac{A_{zg}+C^c_{zg}\cos\Phi+C^s_{zg}\sin\Phi}
+    {A^{\rm tot}_z+C^{c,\rm tot}_z\cos\Phi+C^{s,\rm tot}_z\sin\Phi},
+  \label{eq:lam_g_normed}\\
+  \hat\lambda_{ize}(\Phi;\,\eta)
+  &= N_{iz}-\hat\lambda_{izg}(\Phi;\,\eta).
+\end{align}
+The Poisson log-likelihood for AI $z$ at phase $\Phi$ is
+\begin{equation}
+  \ell_{iz}(\Phi;\,\eta)
+  = n_{izg}\log\hat\lambda_{izg}
+    -\hat\lambda_{izg}
+    +n_{ize}\log\hat\lambda_{ize}
+    -\hat\lambda_{ize},
+  \label{eq:ll_ai}
+\end{equation}
+which depends only on the port fraction $p_g(\Phi;\eta)=\hat\lambda_{izg}/N_{iz}$.
+The combined Z0$+$Z100 conditional log-likelihood for shot $i$ at laser phase
+$\phi$ is
+\begin{equation}
+  \ell_i(\phi;\,\eta_{iz_0},\eta_{iz_{100}},\beta)
+  = \ell_{iz_0}(\phi;\,\eta_{iz_0})
+  +\ell_{iz_{100}}(\phi+\delta\phi_i(\beta);\,\eta_{iz_{100}}),
+  \label{eq:ll_combined}
+\end{equation}
+where $\delta\phi_i(\beta)=A_s\sin(2\pi f\,i)+A_c\cos(2\pi f\,i)$ is the
+differential phase signal injected into Z100.
+
+\subsection{1D Ridge Prior from the R=0 Kalman Update}
+\label{sec:ridge_prior_gh}
+
+Under the R=0 Kalman update (Section~\ref{sec:r0}), the posterior for the
+mean block $(\mu_{x_0},\mu_{v_x})$ conditional on $\hat\mu_{xf}$ is a
+degenerate Gaussian with a non-degenerate 1D marginal in the direction
+parametrised by $\mu_{x_0}$.  Substituting the R=0 Kalman gain gives
+\begin{equation}
+  \mu_{x_0}\mid\hat\mu_{xf}
+  \;\sim\;
+  \mathcal{N}\!\bigl(\bar\mu_{x_0},\;\bar\sigma^2_{\mu_{x_0}}\bigr),
+  \label{eq:ridge_prior_mu}
+\end{equation}
+\begin{equation}
+  \bar\mu_{x_0}
+  = \frac{\tau_\mathrm{pos}^2}{\tau_\mathrm{pos}^2+T^2\tau_\mathrm{vel}^2}
+    \hat\mu_{xf},
+  \qquad
+  \bar\sigma^2_{\mu_{x_0}}
+  = \!\left(\frac{1}{\tau_\mathrm{pos}^2}
+    +\frac{1}{T^2\tau_\mathrm{vel}^2}\right)^{\!-1}.
+  \label{eq:ridge_prior_mu_params}
+\end{equation}
+Once $\mu_{x_0}$ is fixed, the ridge constraint gives
+$\mu_{v_x}=(\hat\mu_{xf}-\mu_{x_0})/T$.
+An identical pair of equations applies to $(\mu_{y_0},\mu_{v_y})$.
+
+For the variance block, a linearised prior on $s_{x_0}=\sigma^2_{x_0}$,
+$s_{v_x}=\sigma^2_{v_x}$ and the R=0 Kalman update on the constraint
+$s_{x_0}+T^2 s_{v_x}=\hat\sigma^2_{xf}$ give
+\begin{equation}
+  s_{x_0}\mid\hat\sigma^2_{xf}
+  \;\sim\;
+  \mathcal{N}\!\bigl(\bar s^{\,*}_{x_0},\;\bar\tau^2_{s_{x_0}}\bigr),
+  \label{eq:ridge_prior_var}
+\end{equation}
+\begin{equation}
+  \bar s^{\,*}_{x_0}
+  = \bar\sigma_\mathrm{pos}^2
+  + \bar\tau^2_{s_{x_0}}\,
+    \frac{\hat\sigma^2_{xf}-\bar\sigma_\mathrm{pos}^2-T^2\bar\sigma_\mathrm{vel}^2}
+         {\tau^2_{s_{x_0}}},
+  \qquad
+  \bar\tau^2_{s_{x_0}}
+  = \!\left(\frac{1}{\tau^2_{s_{x_0}}}
+    +\frac{1}{T^4\tau^2_{s_{v_x}}}\right)^{-1},
+  \label{eq:ridge_prior_var_params}
+\end{equation}
+where $\tau_{s_{x_0}}=2\bar\sigma_\mathrm{pos}\sigma_{\sigma,\mathrm{pos}}$ is
+the prior standard deviation on $s_{x_0}$ obtained by the delta method, and
+$\bar\sigma_\mathrm{pos}$, $\sigma_{\sigma,\mathrm{pos}}$ are the prior mean
+and standard deviation of $\sigma_{x_0}$.  Once $s_{x_0}$ is fixed,
+$s_{v_x}=\max(\hat\sigma^2_{xf}-s_{x_0},\,0)/T^2$.  These four 1D priors are
+the analytic Bayesian combination of the original 8D prior $p(\eta)$ with the
+observed final moments, not a heuristic.
+
+\subsection{4D Gauss-Hermite Quadrature Grid}
+\label{sec:gh_grid}
+
+The 4D nuisance integral after the R=0 reduction is
+\begin{equation}
+  \int_{\mathbb{R}^4}
+    \ell_i\!\bigl(\phi;\,\tilde\eta(\xi),\beta\bigr)\;
+    p_{\rm ridge}(\xi\mid m_i)\;d^4\xi,
+  \label{eq:ridge_int}
+\end{equation}
+where $\xi=(\mu_{x_0},\mu_{y_0},s_{x_0},s_{y_0})$ collects the four free
+parameters, $\tilde\eta(\xi)$ reconstructs the full 8-vector via the ridge
+constraints, and $p_{\rm ridge}=\prod_{d=1}^4\mathcal{N}(\bar\xi_d,\bar\tau_d^2)$
+is the product of four independent 1D Gaussians from
+Section~\ref{sec:ridge_prior_gh}.
+
+Since $p_{\rm ridge}$ is a product of Gaussians, the integral is approximated
+by a 4D product Gauss-Hermite (GH) rule.  With $n_{\rm gh}$ nodes per
+dimension, the rule uses $n_{\rm gh}^4$ points and is exact for polynomials
+of degree $\le2n_{\rm gh}-1$ in each dimension.
+
+\paragraph{Construction.}
+Let $\{t_k,w_k\}_{k=1}^{n_{\rm gh}}$ be the standard Hermite nodes and
+weights ($\sum_k w_k=\sqrt{\pi}$).  For dimension $d$ with Gaussian
+$\mathcal{N}(\bar\xi_d,\bar\tau_d^2)$, the physical nodes and normalised
+log-weights are
+\begin{equation}
+  \xi_{d,k}=\bar\xi_d+\sqrt{2}\,\bar\tau_d\,t_k,
+  \qquad
+  \log\tilde w_{d,k}=\log w_k-\tfrac{1}{2}\log\pi,
+  \label{eq:gh_nodes}
+\end{equation}
+with $\sum_k\tilde w_{d,k}=1$.  The 4D product rule has node
+$\xi^{(j)}=(\xi_{1,k_1},\xi_{2,k_2},\xi_{3,k_3},\xi_{4,k_4})$ and
+\begin{equation}
+  \log\tilde w^{(j)}
+  =\sum_{d=1}^4\log\tilde w_{d,k_d}.
+  \label{eq:gh_logw}
+\end{equation}
+Variance nodes $s_{x_0}$ are clipped to $[0,\hat\sigma^2_{xf}]$ before
+reconstructing $\tilde\eta$:
+\begin{equation}
+  \mu_{v_x}=(\hat\mu_{xf}-\mu_{x_0})/T,\quad
+  \sigma_{v_x}=\sqrt{\max(\hat\sigma^2_{xf}-s_{x_0},0)}/T,
+  \label{eq:eta_reconstruct}
+\end{equation}
+and analogously for the $y$ block.
+
+\subsection{Per-Shot Log-Marginal Likelihood}
+\label{sec:shot_logmarg}
+
+For each GH node $j=1,\ldots,n_{\rm gh}^4$, the integrated ACS
+$\{A^{(j)}_{zs},C^{c(j)}_{zs},C^{s(j)}_{zs}\}$ is evaluated once via the
+batched Monte Carlo estimator of Section~\ref{sec:acs_integrated} at
+$\tilde\eta^{(j)}$, and cached.  All subsequent evaluations at different
+$(\phi,\beta)$ reuse these precomputed values.
+
+The GH-marginalised log-likelihood for AI $z$ at phase $\Phi$ is
+\begin{equation}
+  \log f_{iz}(\Phi)
+  =\operatorname{logsumexp}_{j=1}^{n_{\rm gh}^4}
+    \Bigl[\log\tilde w^{(j)}+\ell_{iz}\!\bigl(\Phi;\;\tilde\eta^{(j)}\bigr)\Bigr].
+  \label{eq:logf_iz}
+\end{equation}
+The phase-marginalised log-likelihood for shot $i$ is obtained by combining
+the two AIs and marginalising $\phi_i$ over a uniform grid
+$\phi_k=2\pi k/K$, $k=0,\ldots,K-1$:
+\begin{equation}
+  \log\mathcal{L}_i(\beta)
+  =\operatorname{logsumexp}_{k=0}^{K-1}
+    \Bigl[\log f_{iz_0}(\phi_k)
+    +\log f_{iz_{100}}(\phi_k+\delta\phi_i(\beta))\Bigr]-\log K.
+  \label{eq:logLi}
+\end{equation}
+The outer logsumexp marginalises over the unknown laser phase $\phi_i$ with a
+uniform discrete prior.  The full log-likelihood sums over independent shots:
+\begin{equation}
+  \log\mathcal{L}(\beta)=\sum_{i=1}^{N_{\rm shots}}\log\mathcal{L}_i(\beta).
+  \label{eq:logLfull_gh}
+\end{equation}
+
+\subsection{Signal Optimisation}
+\label{sec:signal_opt_gh}
+
+The MLE $\hat\beta=\arg\max_\beta\log\mathcal{L}(\beta)$ is found by
+multi-start L-BFGS-B.  One start is fixed at the null $(0,0)$; the remaining
+$n_{\rm starts}-1$ are drawn uniformly from the search domain
+$[-A_{\rm max},A_{\rm max}]^2$.  The best solution across all starts is
+retained.  With $N_{\rm shots}\ge100$ and signal amplitude
+$A\gtrsim0.05$\,rad, all starts converge to the same optimum, confirming
+unimodality at this regime.
+
+\subsection{Complete Algorithm}
+\label{sec:gh_algorithm}
+
+\begin{enumerate}
+
+\item \textbf{Data reduction} (once per shot per AI).
+  From the 2D image pair $(n_{izgb},n_{izeb})$, compute port sums
+  $n_{izg}$, $n_{ize}$, $N_{iz}$, and spatial moments
+  $(\hat\mu_{xf},\hat\mu_{yf},\hat\sigma^2_{xf},\hat\sigma^2_{yf})$
+  from the combined image $m_b=n_{izgb}+n_{izeb}$.
+
+\item \textbf{Ridge prior} (once per shot per AI).
+  Compute the four 1D Gaussian parameters
+  $\{(\bar\mu_{x_0},\bar\sigma_{\mu_{x_0}}),(\bar\mu_{y_0},\bar\sigma_{\mu_{y_0}}),
+  (\bar s^{\,*}_{x_0},\bar\tau_{s_{x_0}}),(\bar s^{\,*}_{y_0},\bar\tau_{s_{y_0}})\}$
+  via \eqref{eq:ridge_prior_mu_params} and \eqref{eq:ridge_prior_var_params}.
+
+\item \textbf{GH grid} (once per shot per AI).
+  Form the $n_{\rm gh}^4$ product-rule nodes $\{\xi^{(j)}\}$ and
+  log-weights $\{\log\tilde w^{(j)}\}$ via \eqref{eq:gh_nodes}--\eqref{eq:gh_logw}.
+  Clip variance nodes and reconstruct $\tilde\eta^{(j)}$ via \eqref{eq:eta_reconstruct}.
+
+\item \textbf{Integrated ACS precomputation} (once per GH node per shot per AI).
+  For each $\tilde\eta^{(j)}$, draw $n_{\rm qmc}$ Gaussian cloud samples and
+  evaluate the batched PSMAP on GPU to obtain
+  $(A^{(j)}_{zs},C^{c(j)}_{zs},C^{s(j)}_{zs})$ for $s\in\{g,e\}$.
+  Store alongside $\log\tilde w^{(j)}$.
+
+\item \textbf{Signal log-likelihood} (per $\beta$ evaluation).
+  For each shot $i$ and trial $\beta$: compute $\delta\phi_i(\beta)$;
+  evaluate $\log f_{iz}(\phi_k)$ for all $k$ via \eqref{eq:logf_iz};
+  apply \eqref{eq:logLi}; sum shots via \eqref{eq:logLfull_gh}.
+
+\item \textbf{Optimisation}.
+  Maximise $\log\mathcal{L}(\beta)$ over $\beta\in[-A_{\rm max},A_{\rm max}]^2$
+  with $n_{\rm starts}$ independent L-BFGS-B runs
+  (Section~\ref{sec:signal_opt_gh}).
+
+\end{enumerate}
+
+\subsection{Default Hyperparameters and Computational Cost}
+\label{sec:gh_cost}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Parameter & Symbol & Default \\
+\midrule
+Detection time                 & $T$ & $3.8$\,s \\
+GH order per dimension         & $n_{\rm gh}$ & $4$ \\
+Total GH nodes per shot per AI & $n_{\rm gh}^4$ & $256$ \\
+QMC samples per GH node        & $n_{\rm qmc}$ & $2048$ \\
+Phase grid points              & $K$ & $128$ \\
+Optimiser starts               & $n_{\rm starts}$ & $8$ \\
+Search domain half-width       & $A_{\rm max}$ & $0.2$\,rad \\
+COM prior std (position)       & $\tau_{\rm pos}$ & $10\,\mu$m \\
+COM prior std (velocity)       & $\tau_{\rm vel}$ & $10\,\mu$m/s \\
+Width prior mean (position)    & $\bar\sigma_{\rm pos}$ & $100\,\mu$m \\
+Width prior mean (velocity)    & $\bar\sigma_{\rm vel}$ & $100\,\mu$m/s \\
+Width prior std (position)     & $\sigma_{\sigma,{\rm pos}}$ & $10\,\mu$m \\
+Width prior std (velocity)     & $\sigma_{\sigma,{\rm vel}}$ & $10\,\mu$m/s \\
+\bottomrule
+\end{tabular}
+\caption{Default hyperparameters for the 4D GH moment inference pipeline
+(\texttt{python-scripts/moment\_inference.py}).}
+\label{tab:gh_params}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Stage & Scope & Wall-time (A100) \\
+\midrule
+Load PSMAPs                       & Once               & ${\approx}25$\,s \\
+Data reduction + ridge priors     & Per shot/AI        & ${<}1$\,ms \\
+GH grid + ACS precompute          & Per shot/AI        & ${\approx}0.56$\,s \\
+Total precompute (200 shots)      & Per run            & ${\approx}1.9$\,min \\
+$\log\mathcal{L}(\beta)$ single eval & Per eval        & ${\approx}0.5$\,s \\
+Optimisation ($n_{\rm starts}=8$) & Per run           & ${\approx}95$\,s \\
+\textbf{Total (200 shots)}        & \textbf{Per run}  & $\mathbf{{\approx}10}$\,\textbf{min} \\
+\bottomrule
+\end{tabular}
+\caption{Wall-times for $N_{\rm shots}=200$, $n_{\rm gh}=4$, $n_{\rm qmc}=2048$, $K=128$.
+The precompute stage is dominated by $200\times2\times256=102\,400$ batched PSMAP calls.}
+\label{tab:gh_cost}
+\end{table}
+
+\subsection{Validation}
+\label{sec:gh_validation}
+
+Running \texttt{moment\_inference.py} on the $N_{\rm shots}=200$, $N_{iz}=10^6$
+dataset (true signal $A=0.10$\,rad, $f=0.30$\,cycles/shot, $\varphi=0.50$\,rad,
+giving $(A_s,A_c)=(0.0878,0.0479)$\,rad) gives:
+\begin{itemize}
+  \item $\log\mathcal{L}(\hat\beta)-\log\mathcal{L}(0,0)=+1.79\times10^5$\,nats,
+    strongly detecting the signal.
+  \item $\hat A_s=0.091$\,rad, $\hat A_c=0.051$\,rad
+    (recovered amplitude $\hat A=0.104$\,rad vs.\ true $0.100$\,rad).
+  \item All 8 optimisation starts converge to the same value
+    ($\log\mathcal{L}\approx4.098\times10^9$), confirming unimodality.
+\end{itemize}
+
+%%============================================================
+\section{8D Prior Marginalisation (Moment-Free Baseline)}
+\label{sec:prior8d}
+%%============================================================
+
+This section describes a simplified variant of the inference pipeline that
+\emph{ignores} the observed final-position moments entirely.  Rather than
+collapsing the nuisance integral to a 4D ridge via the R=0 Kalman update
+(Section~\ref{sec:gh4d}), the cloud parameters $\eta$ are marginalised
+directly against the 8D prior $p_0(\eta)$.  The result is a strictly
+\emph{less informative} likelihood that serves as a baseline: comparing it
+with the moment-conditioned result quantifies how much information the spatial
+image data contribute beyond the total port counts.
+
+\subsection{Reduction to Port Counts Only}
+
+For each shot $i$ and each AI $z$, the only data used are the total port
+counts $n_{izg} = \sum_b n_{izgb}$ and $n_{ize} = \sum_b n_{izeb}$.  No
+spatial moments are extracted; the full image is reduced to two scalars.
+
+The integrated ACS model~\eqref{eq:lam_g_normed}--\eqref{eq:ll_ai} and the
+port-fraction log-likelihood~\eqref{eq:ll_combined} are used unchanged.
+
+\subsection{Marginalisation over the 8D Prior}
+\label{sec:prior8d_marg}
+
+The log-marginal for shot $i$ at laser phase $\phi$ and signal $\beta$ is
+\begin{equation}
+  \log\mathcal{L}_i^{\rm prior}(\beta)
+  = \operatorname{logsumexp}_{k=0}^{K-1}
+    \Bigl[
+      \log F_{iz_0}(\phi_k)
+      + \log F_{iz_{100}}(\phi_k + \delta\phi_i(\beta))
+    \Bigr] - \log K,
+  \label{eq:logLi_prior}
+\end{equation}
+where
+\begin{equation}
+  \log F_{iz}(\Phi)
+  = \operatorname{logsumexp}_{j=1}^{n_\eta}
+    \Bigl[\log\tilde w_j + \ell_{iz}\!\bigl(\Phi;\;\eta^{(j)}\bigr)\Bigr],
+  \qquad
+  \log\tilde w_j = -\log n_\eta \;\;\forall j,
+  \label{eq:logF_iz_prior}
+\end{equation}
+and $\{\eta^{(j)}\}_{j=1}^{n_\eta}$ are fixed samples from the prior
+$p_0(\eta)$.  The uniform weights $\tilde w_j = 1/n_\eta$ reflect that
+the samples are drawn directly from $p_0(\eta)$, so no importance
+correction is needed.
+
+\subsection{Sobol QMC Sampling of the Prior}
+\label{sec:prior8d_qmc}
+
+The prior factorises over the 8 cloud parameters
+$\eta = (\mu_{x_0}, \mu_{y_0}, \mu_{v_x}, \mu_{v_y}, \sigma_{x_0},
+\sigma_{y_0}, \sigma_{v_x}, \sigma_{v_y})$:
+\begin{align}
+  \mu_{x_0},\mu_{y_0} &\sim \mathcal{N}(0,\,\tau_\mathrm{pos}^2), &
+  \mu_{v_x},\mu_{v_y} &\sim \mathcal{N}(0,\,\tau_\mathrm{vel}^2), \nonumber\\
+  \sigma_{x_0},\sigma_{y_0} &\sim \mathcal{N}(\bar\sigma_\mathrm{pos},\,\sigma_{\sigma,\mathrm{pos}}^2), &
+  \sigma_{v_x},\sigma_{v_y} &\sim \mathcal{N}(\bar\sigma_\mathrm{vel},\,\sigma_{\sigma,\mathrm{vel}}^2).
+  \label{eq:prior8d}
+\end{align}
+Standard deviations are clipped to a small positive floor after sampling.
+
+Samples are drawn using a scrambled Sobol sequence in $[0,1)^8$ transformed
+through the normal quantile function.  Sobol sequences achieve a
+discrepancy of $\mathcal{O}((\log n_\eta)^8 / n_\eta)$ in 8D, compared to
+$\mathcal{O}(1/\sqrt{n_\eta})$ for plain Monte Carlo, yielding significantly
+better coverage of the prior at the same sample budget.  The default
+$n_\eta = 512$ gives a comparable total evaluation count to the $n_{\rm gh}^4
+= 256$ nodes of the 4D GH rule.
+
+\paragraph{Why not 8D Gauss-Hermite.}
+A product GH rule with $n_{\rm gh}$ nodes per dimension requires
+$n_{\rm gh}^8$ evaluations.  Even $n_{\rm gh}=2$ gives $2^8=256$ nodes
+(only three polynomial degrees per axis — far too coarse for the nonlinear
+ACS integrand).  $n_{\rm gh}=4$ would require $4^8=65\,536$ nodes, a 256-fold
+increase over the 4D case, making it computationally infeasible.  QMC with
+$n_\eta = 512$ achieves comparable or better accuracy at the same cost as the
+4D moment-conditioned method.
+
+\subsection{Computational Cost}
+
+Because the prior $p_0(\eta)$ does not depend on any shot-specific data,
+the integrated ACS need be evaluated at the $n_\eta$ prior samples
+\emph{only once} per AI — not once per shot.  The precompute is therefore
+$\mathcal{O}(n_\eta)$ instead of $\mathcal{O}(N_{\rm shots}\times n_\eta)$,
+reducing the precompute from $\sim\!2$\,min to a few seconds.  Only the
+per-shot port counts $(n_{izg}, n_{ize})$ are read in a fast loop.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Stage & Scope & Wall-time (A100) \\
+\midrule
+Load PSMAPs                                 & Once           & ${\approx}25$\,s \\
+Sample $n_\eta$ prior points (Sobol)        & Once           & ${<}0.1$\,s \\
+ACS precompute ($n_\eta$ pts, 2 AIs)        & Once           & ${\approx}5$\,s \\
+Read port counts (200 shots)                & Once           & ${<}1$\,s \\
+$\log\mathcal{L}^{\rm prior}(\beta)$ eval   & Per eval       & ${\approx}0.5$\,s \\
+Optimisation ($n_{\rm starts}=8$)          & Per run        & ${\approx}95$\,s \\
+\textbf{Total (200 shots)}                  & \textbf{Per run} & $\mathbf{{\approx}2}$\,\textbf{min} \\
+\bottomrule
+\end{tabular}
+\caption{Wall-times for \texttt{python-scripts/prior\_inference.py},
+$N_{\rm shots}=200$, $n_\eta=512$, $K=128$.  The precompute saving over the
+moment-conditioned method (Section~\ref{sec:gh4d}) arises because the prior
+ACS is shot-independent.}
+\label{tab:prior_cost}
+\end{table}
+
+\subsection{Information Content of Final Moments}
+\label{sec:moment_info}
+
+Let $\hat\beta^{\rm mom}$ and $\hat\beta^{\rm prior}$ denote the MLEs from
+the moment-conditioned and prior-only pipelines respectively.  Three
+complementary diagnostics quantify the value of the spatial moment data:
+
+\begin{enumerate}
+  \item \textbf{Log-likelihood gain.}
+    The quantity
+    \begin{equation}
+      \Delta\log\mathcal{L}
+      = \log\mathcal{L}^{\rm mom}(\hat\beta^{\rm mom})
+        - \log\mathcal{L}^{\rm prior}(\hat\beta^{\rm prior})
+    \end{equation}
+    is always non-negative (both methods use the same port-count data; the
+    moment-conditioned method uses strictly more information).  A large
+    $\Delta\log\mathcal{L}$ means the spatial moments substantially sharpen
+    the nuisance posterior, aiding signal recovery.
+
+  \item \textbf{Recovery accuracy.}
+    Compare $|\hat\beta^{\rm mom} - \beta_{\rm true}|$ vs.\
+    $|\hat\beta^{\rm prior} - \beta_{\rm true}|$.  Bias or increased variance
+    in the prior-only estimate indicates that moment conditioning improves
+    the identifiability of the signal.
+
+  \item \textbf{Signal-to-noise ratio.}
+    On repeated datasets (varying shot noise and cloud realisations), the
+    ratio of signal-to-null log-likelihood ratios
+    $\log\mathcal{L}(\hat\beta)/\log\mathcal{L}(0,0)$ from the two
+    pipelines gives the effective SNR gain from moment conditioning.
+\end{enumerate}
+
+The prior-only method therefore serves as both a practical fallback (for
+settings where images are not recorded or not trusted) and as a diagnostic
+probe of how much spatial information is present in the cloud images.
+
+%%============================================================
 \section{Full Marginal Log-Likelihood}
 %%============================================================
 

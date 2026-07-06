@@ -84,6 +84,11 @@ Options
   -- Cloud width distribution:
   --sigma_x_mean / --sigma_x_std    mean/std of σ_x, σ_y [m]   (default: 100e-6 / 10e-6)
   --sigma_vx_mean / --sigma_vx_std  mean/std of σ_vx, σ_vy [m/s] (default: 3.09e-4 / 10e-6)
+
+  -- Linear phase ramp (applied to final-position atoms at the selected site):
+  --linear_phase_kappa      Slope κ [rad/m] of the phase ramp φ = κ·xf (default: 0 = off)
+  --linear_phase_site       Which interferometer to apply it to: Z0 | Z100 | both (default: both)
+  --linear_phase_coordinate Spatial coordinate for the ramp (currently only 'xf'; default: xf)
 """
 
 import argparse
@@ -107,7 +112,7 @@ Z0_VALUES = {0: 'Z0', 100: 'Z100'}
 
 
 def _make_surrogate(psmap_dir, z0):
-    fname = os.path.join(psmap_dir, f'PSGRID4D_CONFOCAL_Z{z0}.h5')
+    fname = os.path.join(psmap_dir, f'PSGRID4D_CONFOCAL_FINE_Z{z0}.h5')
     return PSMAPSurrogate(load_psmap(fname), t_det=T_DET, use_gpu=True)
 
 
@@ -156,7 +161,7 @@ def _fmt_time(seconds):
 
 
 def _init_h5(f, phi0, delta_phi, cloud_params, signal_params,
-             n_atoms, half_range, res, z0_m):
+             n_atoms, half_range, res, z0_m, linear_phase_params):
     """
     Prepare an open HDF5 file for image output.
 
@@ -192,6 +197,10 @@ def _init_h5(f, phi0, delta_phi, cloud_params, signal_params,
     f.attrs['signal_amp']       = signal_params['amp']
     f.attrs['signal_freq']      = signal_params['freq']
     f.attrs['signal_phase']     = signal_params['phase']
+    f.attrs['linear_phase_applied']    = bool(linear_phase_params['applied'])
+    f.attrs['linear_phase_kappa']      = float(linear_phase_params['kappa'])
+    f.attrs['linear_phase_site']       = str(linear_phase_params['site'])
+    f.attrs['linear_phase_coordinate'] = str(linear_phase_params['coordinate'])
 
 
 def _write_shot_image(f, shot_i, img_s0, img_s1):
@@ -200,7 +209,16 @@ def _write_shot_image(f, shot_i, img_s0, img_s1):
     f['images_s1'][shot_i] = img_s1
 
 
-def _iter_shots(surrogate, cloud_params, phi0, n_atoms, edges, rng):
+def _linear_phase_profile(kappa, coordinate):
+    if kappa == 0.0:
+        return None
+    if coordinate != 'xf':
+        raise ValueError(f'Unsupported linear phase coordinate: {coordinate}')
+    return lambda xf, yf, vxf, vyf: kappa * xf
+
+
+def _iter_shots(surrogate, cloud_params, phi0, n_atoms, edges, rng,
+                phase_profile=None):
     """
     Yield (shot_i, img_s0, img_s1) uint16 images for each shot.
 
@@ -227,6 +245,7 @@ def _iter_shots(surrogate, cloud_params, phi0, n_atoms, edges, rng):
             sigma_vx=sigma_vx[i], sigma_vy=sigma_vy[i],
             phi0=float(phi0[i]),
             natoms=n_atoms,
+            phase_profile=phase_profile,
             rng=rng,
             _image_edges=edges,
         )
@@ -275,12 +294,25 @@ def _simulate_run(run_idx, rng, args, surrogates, data_root,
                            f'run_{run_idx:03d}', z0_label, 'data_IMG.h5')
         os.makedirs(os.path.dirname(out), exist_ok=True)
 
+        apply_ramp = (args.linear_phase_kappa != 0.0
+                      and args.linear_phase_site in (z0_label, 'both'))
+        phase_profile = (_linear_phase_profile(args.linear_phase_kappa,
+                                               args.linear_phase_coordinate)
+                         if apply_ramp else None)
+        linear_phase_params = {
+            'applied': apply_ramp,
+            'kappa': args.linear_phase_kappa,
+            'site': args.linear_phase_site,
+            'coordinate': args.linear_phase_coordinate,
+        }
+
         with h5py.File(out, 'w') as f:
             _init_h5(f, phi0_eff, dphi_z, cloud_params, signal_params,
-                     args.n_atoms, half_range, args.image_res, float(z0_m))
+                     args.n_atoms, half_range, args.image_res, float(z0_m),
+                     linear_phase_params)
             for shot_i, img_s0, img_s1 in _iter_shots(
                     surrogates[z0_m], cloud_params, phi0_eff,
-                    args.n_atoms, edges, rng):
+                    args.n_atoms, edges, rng, phase_profile=phase_profile):
                 _write_shot_image(f, shot_i, img_s0, img_s1)
 
         print(f'  → {out}  ({os.path.getsize(out)/1e6:.1f} MB)')
@@ -312,6 +344,10 @@ def main():
     p.add_argument('--sigma_x_std',    type=float, default=10e-6)
     p.add_argument('--sigma_vx_mean',  type=float, default=3.09e-4)
     p.add_argument('--sigma_vx_std',   type=float, default=10e-6)
+    p.add_argument('--linear_phase_kappa', type=float, default=0.0)
+    p.add_argument('--linear_phase_site', choices=['Z0', 'Z100', 'both'],
+                   default='both')
+    p.add_argument('--linear_phase_coordinate', choices=['xf'], default='xf')
 
     args = p.parse_args()
 
@@ -334,6 +370,9 @@ def main():
             f'_phi0{args.phi0_mode}'
             f'{signal_tag}'
         )
+        if args.linear_phase_kappa != 0.0:
+            args.run_name += (f'_kappa{args.linear_phase_kappa:.2e}'
+                              f'_{args.linear_phase_site}')
 
     seed_seq    = np.random.SeedSequence(args.seed)
     n_total     = args.run_start + args.n_runs
@@ -361,6 +400,10 @@ def main():
         print(f'  signal      : amp={args.signal_amp:.3f} rad'
               f'  freq={args.signal_freq:.4f} cyc/shot'
               f'  phase={args.signal_phase:.3f} rad')
+    if args.linear_phase_kappa != 0.0:
+        print(f'  phase ramp  : kappa={args.linear_phase_kappa:g} rad/m'
+              f'  site={args.linear_phase_site}'
+              f'  coordinate={args.linear_phase_coordinate}')
     print()
 
     print('Loading surrogates …', end=' ', flush=True)
