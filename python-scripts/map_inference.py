@@ -275,6 +275,81 @@ def batch_acs(eta_list, acs_obj, n_qmc, rng_seed=0):
     return out.get()   # numpy
 
 
+def _gh_nodes_weights(n_order):
+    """
+    Tensor-product Gauss-Hermite nodes/weights for 4D N(0,I), normalised to sum=1.
+
+    Returns
+    -------
+    T : (n_order**4, 4)  nodes in the standardised space (before Cholesky transform)
+    W : (n_order**4,)    weights summing to 1
+    """
+    t1d, w1d = np.polynomial.hermite.hermgauss(n_order)
+    grids = np.meshgrid(t1d, t1d, t1d, t1d, indexing='ij')
+    T = np.stack([g.ravel() for g in grids], axis=1)          # (n^4, 4)
+    W = np.ones(n_order**4)
+    for g in np.meshgrid(w1d, w1d, w1d, w1d, indexing='ij'):
+        W *= g.ravel()
+    W /= np.pi**2   # normalise: π^(d/2) for d=4
+    return T, W
+
+
+def batch_acs_gh(eta_list, acs_obj, n_order):
+    """
+    Compute spatially-integrated ACS using a tensor-product Gauss-Hermite rule.
+
+    Exact for polynomial integrands up to degree (2*n_order - 1) per dimension.
+    n_order=3 → 81 deterministic points; n_order=4 → 256.
+
+    Parameters
+    ----------
+    eta_list : list of (10,) arrays
+    acs_obj  : SurrogatePixelACS
+    n_order  : int  GH points per dimension
+
+    Returns
+    -------
+    (n_shots, 6) float64
+    """
+    if not USE_GPU:
+        raise RuntimeError('GPU (cupy) required')
+    T, W = _gh_nodes_weights(n_order)   # (n_gh, 4), (n_gh,)
+    n_gh   = len(W)
+    n_shots = len(eta_list)
+
+    # Build sample points: x = mu + sqrt(2) * L @ t  for each GH node t
+    pts_all = np.empty((n_shots * n_gh, 4), dtype=np.float64)
+    for i, eta in enumerate(eta_list):
+        mu, L = _cloud_cholesky(eta)
+        pts_all[i*n_gh:(i+1)*n_gh] = mu + np.sqrt(2) * (L @ T.T).T
+
+    pts_g  = cp.asarray(pts_all)
+    W_g    = cp.asarray(W)   # (n_gh,)
+
+    dphi_g, amp0_g, amp1_g = acs_obj._eval_fast(
+        pts_g[:, 0], pts_g[:, 1], pts_g[:, 2], pts_g[:, 3])
+
+    inter  = acs_obj._port_inter[None]
+    A_per  = amp0_g**2 + amp1_g**2
+    Cc_per =  inter * 2.0 * amp0_g * amp1_g * cp.cos(dphi_g)
+    Cs_per = -inter * 2.0 * amp0_g * amp1_g * cp.sin(dphi_g)
+
+    s0, s1 = acs_obj.s0_g, acs_obj.s1_g
+
+    def _wavg(arr, mask):
+        # (n_shots*n_gh, n_ports) → select port → (n_shots*n_gh,)
+        #   → (n_shots, n_gh) → weighted sum over n_gh → (n_shots,)
+        vals = arr[:, mask].sum(-1).reshape(n_shots, n_gh)  # (n_shots, n_gh)
+        return (vals * W_g[None]).sum(-1)
+
+    out = cp.stack([
+        _wavg(A_per, s0), _wavg(Cc_per, s0), _wavg(Cs_per, s0),
+        _wavg(A_per, s1), _wavg(Cc_per, s1), _wavg(Cs_per, s1),
+    ], axis=1)   # (n_shots, 6)
+
+    return out.get()
+
+
 # ── logL ───────────────────────────────────────────────────────────────────────
 
 def log_f_ai(shot_dict, phi_shifted):
@@ -382,14 +457,20 @@ def _run_one(data_dir, acs_z0, acs_z100, m_eta, K, A_m_eta, args, log):
 
     # ── Batched ACS precompute ────────────────────────────────────────────────
     t0 = time.perf_counter()
+    def _compute_acs(eta_list, acs_obj, seed):
+        if args.quad == 'gh':
+            return batch_acs_gh(eta_list, acs_obj, args.gh_order)
+        else:
+            return batch_acs(eta_list, acs_obj, args.n_qmc_int, rng_seed=seed)
+
     if args.use_moments or args.use_true_eta:
-        acs_z0_arr   = batch_acs(eta_z0_list,   acs_z0,   args.n_qmc_int, rng_seed=1)
-        acs_z100_arr = batch_acs(eta_z100_list,  acs_z100, args.n_qmc_int, rng_seed=2)
+        acs_z0_arr   = _compute_acs(eta_z0_list,  acs_z0,   1)
+        acs_z100_arr = _compute_acs(eta_z100_list, acs_z100, 2)
     else:
-        # All shots identical → compute once with n_qmc_int * n_shots samples for accuracy
-        n_all = args.n_qmc_int * len(shot_ids)
-        acs_z0_arr   = np.repeat(batch_acs([m_eta], acs_z0,   n_all, rng_seed=1), len(shot_ids), axis=0)
-        acs_z100_arr = np.repeat(batch_acs([m_eta], acs_z100, n_all, rng_seed=2), len(shot_ids), axis=0)
+        # All shots identical → compute once (QMC: more samples; GH: same, deterministic)
+        n_all = args.n_qmc_int * len(shot_ids) if args.quad == 'qmc' else args.n_qmc_int
+        acs_z0_arr   = np.repeat(_compute_acs([m_eta], acs_z0,   1), len(shot_ids), axis=0)
+        acs_z100_arr = np.repeat(_compute_acs([m_eta], acs_z100, 2), len(shot_ids), axis=0)
     log.info('ACS precompute done in %.1fs', time.perf_counter() - t0)
 
     # ── Assemble precomp_list ─────────────────────────────────────────────────
@@ -484,7 +565,12 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--bins',        type=int,   default=DEFAULT_BINS)
     p.add_argument('--n_qmc_int',   type=int,   default=DEFAULT_N_QMC_INT,
-                   help='Cloud QMC samples per shot per AI for ACS')
+                   help='Cloud QMC samples per shot per AI for ACS (qmc mode only)')
+    p.add_argument('--quad',        type=str,   default='qmc',
+                   choices=['qmc', 'gh'],
+                   help='Cloud integration method: qmc (default) or gh (Gauss-Hermite)')
+    p.add_argument('--gh_order',    type=int,   default=3,
+                   help='GH points per dimension (gh mode only); n^4 total, default 3 → 81 pts')
     p.add_argument('--n_theta',     type=int,   default=DEFAULT_N_THETA)
     p.add_argument('--t_det',       type=float, default=DEFAULT_T_DET)
     p.add_argument('--max_shots',   type=int,   default=DEFAULT_MAX_SHOTS)
@@ -497,6 +583,10 @@ def main():
                    help='1 = oracle mode: plug in true η from metadata (accuracy limit)')
     p.add_argument('--data_root',   type=str,   default='',
                    help='Dataset root containing run_NNN dirs (sweep mode)')
+    p.add_argument('--run_start',   type=int,   default=0,
+                   help='First run index to process (inclusive, default 0)')
+    p.add_argument('--run_end',     type=int,   default=-1,
+                   help='Last run index to process (inclusive, default -1 = all)')
     p.add_argument('--data_dir',    type=str,
                    default=str(REPO / 'data' / DEFAULT_DATASET / 'run_000'),
                    help='Single run dir (ignored when --data_root is given)')
@@ -522,13 +612,19 @@ def main():
                         datefmt='%H:%M:%S')
     log = logging.getLogger(tag)
 
-    log.info('Mode: %s  n_qmc_int=%d  n_theta=%d  max_shots=%s',
-             tag, args.n_qmc_int, args.n_theta, args.max_shots)
+    quad_info = (f'gh_order={args.gh_order} ({args.gh_order**4} pts)'
+                 if args.quad == 'gh' else f'n_qmc_int={args.n_qmc_int}')
+    log.info('Mode: %s  quad=%s  %s  n_theta=%d  max_shots=%s',
+             tag, args.quad, quad_info, args.n_theta, args.max_shots)
 
     # ── Resolve run directories ───────────────────────────────────────────────
     if args.data_root:
         data_root = Path(args.data_root)
         run_dirs  = sorted(data_root.glob('run_*'))
+        if args.run_end >= 0:
+            run_dirs = run_dirs[args.run_start:args.run_end + 1]
+        else:
+            run_dirs = run_dirs[args.run_start:]
         out_dir   = Path(args.out_dir or str(REPO / 'results' / 'mle_distributions'))
         out_dir.mkdir(parents=True, exist_ok=True)
         log.info('Sweep: %d runs in %s  ->  %s', len(run_dirs), data_root, out_dir)
@@ -539,8 +635,8 @@ def main():
     # ── Load PSMAPs once ──────────────────────────────────────────────────────
     log.info('Loading PSMAPs...')
     t0 = time.perf_counter()
-    psmap_z0   = load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_Z0.h5'))
-    psmap_z100 = load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_Z100.h5'))
+    psmap_z0   = load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z0.h5'))
+    psmap_z100 = load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z100.h5'))
     _ds_tmp = ImageShotDataset(str(run_dirs[0] / 'Z0' / 'data_IMG.h5'))
     edges = np.linspace(-_ds_tmp.half_range, _ds_tmp.half_range, args.bins + 1)
     del _ds_tmp

@@ -342,7 +342,7 @@ def main():
     p.add_argument('--mu_vx_std',      type=float, default=10e-6)
     p.add_argument('--sigma_x_mean',   type=float, default=100e-6)
     p.add_argument('--sigma_x_std',    type=float, default=10e-6)
-    p.add_argument('--sigma_vx_mean',  type=float, default=3.09e-4)
+    p.add_argument('--sigma_vx_mean',  type=float, default=100e-6)
     p.add_argument('--sigma_vx_std',   type=float, default=10e-6)
     p.add_argument('--linear_phase_kappa', type=float, default=0.0)
     p.add_argument('--linear_phase_site', choices=['Z0', 'Z100', 'both'],

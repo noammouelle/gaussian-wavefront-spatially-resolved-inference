@@ -1,3 +1,8 @@
 .claude/
 output-files/*.h5
 data/*
+logs/
+results/
+nohup.out
+**/__pycache__/
+*.pyc

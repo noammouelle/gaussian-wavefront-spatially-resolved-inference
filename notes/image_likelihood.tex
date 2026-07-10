@@ -1435,6 +1435,179 @@ so the ground-truth $(A_s, A_c)$ is read directly from the H5 file attributes
 stored only in the Z100 H5 file (it is zero in Z0 by construction).
 
 %%============================================================
+\section{Full Per-Bin IS Marginalisation}
+\label{sec:full_bin_is}
+%%============================================================
+
+This section describes the pipeline implemented in
+\texttt{python-scripts/full\_image\_is\_inference.py}.  It uses the
+complete spatial image (all $N_b$ per-bin Poisson counts) without
+profiling the cloud nuisances per shot.  Cloud parameters $\eta$ are
+marginalised by importance sampling (IS) from the finite-$R$ moment
+posterior $p(\eta \mid m_i)$.
+
+\subsection{Estimator}
+
+The marginal shot likelihood is
+\begin{equation}
+  \mathcal{L}_i(\beta)
+  = \int p(\text{image}_i \mid \beta, \eta)\; p(\eta)\; d\eta
+  \;\approx\;
+  \frac{1}{M}\sum_{j=1}^M w_j\; p(\text{image}_i \mid \beta, \eta_j),
+  \label{eq:is_full_estimator}
+\end{equation}
+where $\eta_j \sim q(\eta)$ is drawn from the IS proposal and
+\begin{equation}
+  w_j = \frac{p(\eta_j)}{q(\eta_j)}
+  \label{eq:is_weight_full}
+\end{equation}
+corrects for the mismatch between $q$ and the prior $p(\eta)$.  The
+weights are functions of $\eta$ only — they carry no $\beta$-dependence
+— so the same samples and weights are reused across all $\beta$
+evaluations.
+
+\subsection{IS Proposal: $\alpha$-Inflated Moment Posterior}
+
+The proposal is the moment-conditioned posterior with covariance inflated
+by $\alpha > 1$:
+\begin{equation}
+  q(\eta) = p(\eta \mid m_i,\alpha) = \mathcal{N}(\hat\eta_i,\, \alpha\, P_{\rm post}),
+  \label{eq:proposal}
+\end{equation}
+where $\hat\eta_i$ and $P_{\rm post}$ come from a finite-$R$ Kalman
+update on the four image moment observations
+$(\hat\mu_{xf},\hat\mu_{yf},\hat\sigma^2_{xf},\hat\sigma^2_{yf})$.
+Unlike the R=0 update, the finite-$R$ posterior is a non-degenerate 8D
+Gaussian, so sampling from it is straightforward.
+
+The 8D posterior factorises into four independent 2D blocks:
+\begin{itemize}
+  \item \textbf{Mean-$x$ block} $(\mu_{x_0}, \mu_{v_x}) \mid \hat\mu_{xf}$:
+    observation $\hat\mu_{xf}$ with noise variance $R_{\mu,x} = \hat\sigma^2_{xf}/N_i$,
+    observation matrix $h = (1,\, T)$.
+  \item \textbf{Mean-$y$ block}: identical with $y$ moments.
+  \item \textbf{Width-$x$ block} $(\sigma_{x_0}, \sigma_{v_x}) \mid \hat\sigma^2_{xf}$:
+    linearised observation $h_\sigma = (2\bar\sigma_{\rm pos},\, 2T^2\bar\sigma_{\rm vel})$
+    (delta-method gradient of $\hat\sigma^2_{xf}$ w.r.t.\ $\sigma_{x_0}, \sigma_{v_x}$),
+    noise variance $R_{V,x} = 2\hat\sigma^4_{xf}/N_i$.
+  \item \textbf{Width-$y$ block}: identical with $y$ moments.
+\end{itemize}
+Each block is a standard 2D Kalman update with scalar observation.  The
+four posterior covariance matrices are assembled into a block-diagonal
+$P_{\rm post}\in\mathbb{R}^{8\times8}$.
+
+Inflation by $\alpha > 1$ (default $\alpha = 4$) ensures $q$ has heavier
+tails than the true posterior, so importance weights $w_j$ remain bounded
+with high probability.
+
+\subsection{Per-Bin ACS via 2D Gauss-Hermite}
+
+For each IS sample $\eta_j$, the per-bin ACS tensors
+$(A_{zsb}^{(j)}, C^c_{zsb}{}^{(j)}, C^s_{zsb}{}^{(j)})$ of shape
+$(N_b,)$ are computed via \texttt{SemiAnalyticPixelACS.pixel\_acs}.
+This uses:
+\begin{itemize}
+  \item \emph{Exact spatial weight} $P_b = \Phi(x_{b+}/\sigma_{xf}) -
+        \Phi(x_{b-}/\sigma_{xf})$ via Gaussian CDF per bin.
+  \item \emph{2D GH quadrature} over the conditional velocity
+        distribution $p(v_{x_0},v_{y_0} \mid x_f=x_b, y_f=y_b)$.
+        For each bin~$b$, the conditional velocity mean and variance
+        follow from standard Gaussian conditioning:
+        \begin{equation}
+          v_{x_0} \mid x_b
+          \;\sim\;
+          \mathcal{N}\!\Bigl(
+            \mu_{v_x} + \frac{T\sigma^2_{v_x}}{\sigma^2_{xf}}(x_b - \mu_{xf}),\;
+            \frac{\sigma^2_{v_x}\sigma^2_{x_0}}{\sigma^2_{xf}}
+          \Bigr),
+        \end{equation}
+        giving $n_{\rm gh}^2$ deterministic quadrature nodes per bin.
+\end{itemize}
+For $M=64$ IS samples, $N_b=400$ bins and $n_{\rm gh}=4$ (16 nodes per
+bin), the precompute requires 64 sequential calls to
+\texttt{pixel\_acs}, each involving $400\times16 = 6400$ GPU
+evaluations of the PSMAP surrogate.
+
+\subsection{Per-Bin Poisson Log-Likelihood}
+
+The data model for a single AI uses all $N_b$ bins:
+\begin{equation}
+  p(\text{image}_i \mid \beta, \eta_j, \phi)
+  = \prod_{b,s} \mathrm{Poisson}(n_{izsb};\;\lambda_{izsb}^{(j)}(\phi)),
+  \label{eq:poisson_per_bin}
+\end{equation}
+where $\lambda_{izsb}^{(j)} = \Lambda_{iz}^{(j)}(\phi)
+[A_{zsb}^{(j)} + C^c{}_{zsb}^{(j)}\cos\phi + C^s{}_{zsb}^{(j)}\sin\phi]$
+and the normalisation $\Lambda_{iz}^{(j)}(\phi)$ is chosen so that the
+total predicted count equals the observed total $N_{iz}$ (as in
+\eqref{eq:Lphi}).
+
+The per-bin Poisson log-likelihood for IS sample $j$ at phase $\phi_k$ is
+\begin{equation}
+  \ell_{iz}^{(j)}(\phi_k)
+  = \sum_b \Bigl[
+      n_{izgb}\log\lambda_{izgb}^{(j)}(\phi_k)
+      - \lambda_{izgb}^{(j)}(\phi_k)
+      + n_{izeb}\log\lambda_{izeb}^{(j)}(\phi_k)
+      - \lambda_{izeb}^{(j)}(\phi_k)
+    \Bigr].
+  \label{eq:ll_per_bin_is}
+\end{equation}
+Summing over bins is accumulated in chunks of size \texttt{chunk\_bins}
+to bound peak memory to $\mathcal{O}(M \times \texttt{chunk\_bins} \times K)$
+instead of $\mathcal{O}(M \times N_b \times K)$.
+
+\subsection{IS-Weighted Phase Marginalisation}
+
+The IS-marginalised log-likelihood for AI $z$ at phase $\phi_k$ is
+\begin{equation}
+  \log F_{iz}(\phi_k)
+  = \operatorname{logsumexp}_{j=1}^M
+    \Bigl[\log w_j + \ell_{iz}^{(j)}(\phi_k)\Bigr]
+    - \operatorname{logsumexp}_{j=1}^M \log w_j,
+  \label{eq:logF_iz_is}
+\end{equation}
+which normalises the IS weights.  The phase marginalisation and shot
+combination proceed as in \eqref{eq:logLi} and \eqref{eq:logLfull_gh}.
+
+\subsection{ESS Diagnostic}
+
+The effective sample size
+\begin{equation}
+  \mathrm{ESS}
+  = \frac{(\sum_j w_j)^2}{\sum_j w_j^2}
+  \;\in\; [1, M]
+  \label{eq:ess_full}
+\end{equation}
+is reported per shot per AI.  $\mathrm{ESS}/M \approx 1$ indicates that
+the full spatial image adds no cloud information beyond the moments
+(the moment posterior $q$ is already the correct posterior).
+$\mathrm{ESS}/M \ll 1$ indicates that the PSMAP fringe structure
+constrains $\eta$ beyond the cloud envelope moments.
+
+\subsection{Default Hyperparameters}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Parameter & Symbol & Default \\
+\midrule
+Inference bins per side          & $\sqrt{N_b}$ & 20 \\
+GH order per velocity dimension  & $n_{\rm gh}$ & 4 \\
+IS samples per shot per AI       & $M$ & 64 \\
+Proposal inflation factor        & $\alpha$ & 4.0 \\
+Phase-grid points                & $K$ & 128 \\
+Chunk size (logL memory)         & \texttt{chunk\_bins} & 64 \\
+\bottomrule
+\end{tabular}
+\caption{Default hyperparameters for \texttt{full\_image\_is\_inference.py}.
+With these defaults, peak RAM for the logL computation is
+$M \times \texttt{chunk\_bins} \times K \times 3 \times 8 \approx 6$\,MB.}
+\label{tab:full_is_params}
+\end{table}
+
+%%============================================================
 \section{Validation}
 %%============================================================
 

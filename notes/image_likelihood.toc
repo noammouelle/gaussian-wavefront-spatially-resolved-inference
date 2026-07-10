@@ -1,46 +1,76 @@
-\contentsline {section}{\numberline {1}Setup and Notation}{2}{section.1}%
-\contentsline {subsection}{\numberline {1.1}Gradiometer Architecture}{2}{subsection.1.1}%
-\contentsline {subsection}{\numberline {1.2}Parameters}{2}{subsection.1.2}%
-\contentsline {paragraph}{Science signal.}{2}{section*.2}%
-\contentsline {paragraph}{Common laser phase.}{2}{section*.3}%
-\contentsline {paragraph}{Effective AI phase.}{2}{section*.4}%
-\contentsline {paragraph}{Cloud nuisance parameters.}{2}{section*.5}%
-\contentsline {section}{\numberline {2}Semiclassical Phase-Space Map (PSMAP)}{2}{section.2}%
-\contentsline {subsection}{\numberline {2.1}PSMAP Surrogate}{2}{subsection.2.1}%
-\contentsline {subsection}{\numberline {2.2}Transition Probabilities}{3}{subsection.2.2}%
-\contentsline {subsection}{\numberline {2.3}Ballistic Trajectory Map}{3}{subsection.2.3}%
-\contentsline {section}{\numberline {3}Generative Model for Pixel Counts}{3}{section.3}%
-\contentsline {subsection}{\numberline {3.1}Expected Pixel Counts}{3}{subsection.3.1}%
-\contentsline {subsection}{\numberline {3.2}Small-Pixel Approximation}{3}{subsection.3.2}%
-\contentsline {subsection}{\numberline {3.3}Poisson Observation Model}{4}{subsection.3.3}%
-\contentsline {section}{\numberline {4}Pixel Statistics via Gauss--Hermite Quadrature}{4}{section.4}%
-\contentsline {subsection}{\numberline {4.1}Conditional Velocity Distribution}{4}{subsection.4.1}%
-\contentsline {subsection}{\numberline {4.2}2D Gauss--Hermite Quadrature}{4}{subsection.4.2}%
-\contentsline {subsection}{\numberline {4.3}Pre-Computed Per-Pixel Statistics}{5}{subsection.4.3}%
-\contentsline {section}{\numberline {5}Handling Unobserved Parameters: Profiling and Marginalisation}{5}{section.5}%
-\contentsline {subsection}{\numberline {5.1}The Problem: Unobserved Parameters in the Likelihood}{5}{subsection.5.1}%
-\contentsline {subsection}{\numberline {5.2}Marginalisation}{5}{subsection.5.2}%
-\contentsline {paragraph}{What it is.}{5}{section*.6}%
-\contentsline {paragraph}{When is it necessary?}{6}{section*.7}%
-\contentsline {subsection}{\numberline {5.3}Profiling (Concentrated Likelihood)}{6}{subsection.5.3}%
-\contentsline {paragraph}{What it is.}{6}{section*.8}%
-\contentsline {paragraph}{When is it appropriate?}{6}{section*.9}%
-\contentsline {subsection}{\numberline {5.4}Why Marginalise $\phi _i$?}{6}{subsection.5.4}%
-\contentsline {subsection}{\numberline {5.5}Why Profile $\eta _{iz}$?}{7}{subsection.5.5}%
-\contentsline {paragraph}{Approximate independence from $\beta $.}{7}{section*.10}%
-\contentsline {paragraph}{Implementation.}{7}{section*.11}%
-\contentsline {section}{\numberline {6}Full Marginal Log-Likelihood}{7}{section.6}%
-\contentsline {subsection}{\numberline {6.1}Per-Shot Marginal Log-Likelihood}{7}{subsection.6.1}%
-\contentsline {subsection}{\numberline {6.2}Grid Size for Phase Marginalisation}{8}{subsection.6.2}%
-\contentsline {subsection}{\numberline {6.3}Full Log-Likelihood}{8}{subsection.6.3}%
-\contentsline {section}{\numberline {7}Atom Number Normalisation}{8}{section.7}%
-\contentsline {section}{\numberline {8}GPU Implementation}{8}{section.8}%
-\contentsline {subsection}{\numberline {8.1}Pre-Computation Phase (Once per Shot per AI)}{8}{subsection.8.1}%
-\contentsline {subsection}{\numberline {8.2}Per-Evaluation Phase (Every Optimiser Call)}{9}{subsection.8.2}%
-\contentsline {subsection}{\numberline {8.3}Computational Cost}{9}{subsection.8.3}%
-\contentsline {section}{\numberline {9}Maximum Likelihood Estimation}{9}{section.9}%
-\contentsline {subsection}{\numberline {9.1}Parameter Space}{9}{subsection.9.1}%
-\contentsline {subsection}{\numberline {9.2}Multi-Start Nelder--Mead}{9}{subsection.9.2}%
-\contentsline {paragraph}{Stage 1 — Coarse scan.}{10}{section*.12}%
-\contentsline {paragraph}{Stage 2 — Fine polish.}{10}{section*.13}%
-\contentsline {section}{\numberline {10}Validation: Reduction to the Count-Only Likelihood}{10}{section.10}%
+\contentsline {section}{\numberline {1}Setup and Notation}{3}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Gradiometer Architecture}{3}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Parameters}{3}{subsection.1.2}%
+\contentsline {paragraph}{Science signal.}{3}{section*.2}%
+\contentsline {paragraph}{Common laser phase.}{3}{section*.3}%
+\contentsline {paragraph}{Effective AI phase.}{3}{section*.4}%
+\contentsline {paragraph}{Cloud nuisance parameters.}{3}{section*.5}%
+\contentsline {section}{\numberline {2}Semiclassical Phase-Space Map (PSMAP)}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}PSMAP Surrogate}{3}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Transition Probabilities}{4}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Ballistic Trajectory Map}{4}{subsection.2.3}%
+\contentsline {section}{\numberline {3}Per-Pixel Statistics via QMC}{4}{section.3}%
+\contentsline {subsection}{\numberline {3.1}ACS Decomposition}{4}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}QMC Evaluation (\texttt {SurrogatePixelACS})}{4}{subsection.3.2}%
+\contentsline {section}{\numberline {4}Generative Model and Likelihood}{5}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Poisson Observation Model}{5}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Atom Number Scale Factor}{5}{subsection.4.2}%
+\contentsline {section}{\numberline {5}Handling Unobserved Parameters: Profiling and Marginalisation}{6}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Marginalise $\phi _i$}{6}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Profile $\eta _{iz}$}{6}{subsection.5.2}%
+\contentsline {paragraph}{Why $\hat \eta $ is approximately independent of $\beta $.}{6}{section*.6}%
+\contentsline {subsection}{\numberline {5.3}Prior on Cloud Parameters}{6}{subsection.5.3}%
+\contentsline {paragraph}{Initialisation.}{7}{section*.7}%
+\contentsline {section}{\numberline {6}Alternative: Moment-Based Cloud Marginalisation}{7}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Motivation}{7}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Ballistic Degeneracies and Ridge Structure}{7}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Summary Statistics and the Key Decomposition}{7}{subsection.6.3}%
+\contentsline {paragraph}{Total-count image.}{7}{section*.8}%
+\contentsline {paragraph}{Science parameters do not enter $m$.}{8}{section*.9}%
+\contentsline {subsection}{\numberline {6.4}Moment Likelihood $p(m \mid \eta )$}{8}{subsection.6.4}%
+\contentsline {paragraph}{Assumption: PSMAP undetectable in image moments.}{8}{section*.10}%
+\contentsline {subsection}{\numberline {6.5}Analytic Posterior $p(\eta \mid m)$}{8}{subsection.6.5}%
+\contentsline {subsubsection}{\numberline {6.5.1}Mean Parameters}{8}{subsubsection.6.5.1}%
+\contentsline {subsubsection}{\numberline {6.5.2}Width Parameters}{9}{subsubsection.6.5.2}%
+\contentsline {paragraph}{Dominant-velocity-spread regime.}{9}{section*.11}%
+\contentsline {subsection}{\numberline {6.6}Marginalization via the Moment Posterior}{9}{subsection.6.6}%
+\contentsline {paragraph}{Double-counting note.}{10}{section*.12}%
+\contentsline {subsection}{\numberline {6.7}Analytical R\,=\,0 Limit: Dimension Reduction to a Point Estimate}{10}{subsection.6.7}%
+\contentsline {paragraph}{R=0 Kalman posterior.}{10}{section*.13}%
+\contentsline {paragraph}{Dimension reduction.}{10}{section*.14}%
+\contentsline {paragraph}{Point-estimate approximation (zero integration).}{10}{section*.15}%
+\contentsline {paragraph}{Bias and validity of the point estimate.}{10}{section*.16}%
+\contentsline {subsection}{\numberline {6.8}Importance Sampling Correction and Information Diagnostic}{10}{subsection.6.8}%
+\contentsline {paragraph}{Information diagnostic.}{11}{section*.17}%
+\contentsline {section}{\numberline {7}4D Gauss-Hermite Moment Inference}{11}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Spatially-Integrated ACS}{11}{subsection.7.1}%
+\contentsline {paragraph}{Monte Carlo evaluation.}{12}{section*.18}%
+\contentsline {subsection}{\numberline {7.2}Port-Fraction Likelihood}{12}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}1D Ridge Prior from the R=0 Kalman Update}{12}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}4D Gauss-Hermite Quadrature Grid}{13}{subsection.7.4}%
+\contentsline {paragraph}{Construction.}{13}{section*.19}%
+\contentsline {subsection}{\numberline {7.5}Per-Shot Log-Marginal Likelihood}{13}{subsection.7.5}%
+\contentsline {subsection}{\numberline {7.6}Signal Optimisation}{14}{subsection.7.6}%
+\contentsline {subsection}{\numberline {7.7}Complete Algorithm}{14}{subsection.7.7}%
+\contentsline {subsection}{\numberline {7.8}Default Hyperparameters and Computational Cost}{14}{subsection.7.8}%
+\contentsline {subsection}{\numberline {7.9}Validation}{14}{subsection.7.9}%
+\contentsline {section}{\numberline {8}8D Prior Marginalisation (Moment-Free Baseline)}{15}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Reduction to Port Counts Only}{15}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Marginalisation over the 8D Prior}{15}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Sobol QMC Sampling of the Prior}{16}{subsection.8.3}%
+\contentsline {paragraph}{Why not 8D Gauss-Hermite.}{16}{section*.20}%
+\contentsline {subsection}{\numberline {8.4}Computational Cost}{16}{subsection.8.4}%
+\contentsline {subsection}{\numberline {8.5}Information Content of Final Moments}{16}{subsection.8.5}%
+\contentsline {section}{\numberline {9}Full Marginal Log-Likelihood}{17}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Rotation Trick for AI $z=100$}{17}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}Per-Shot Marginal Log-Likelihood}{17}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}Full Log-Likelihood}{17}{subsection.9.3}%
+\contentsline {section}{\numberline {10}Implementation}{18}{section.10}%
+\contentsline {subsection}{\numberline {10.1}ACS Pre-Computation (Once per Shot per AI)}{18}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}Signal Fit (Per Run)}{18}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}Multi-Start Strategy for $\beta $}{18}{subsection.10.3}%
+\contentsline {subsection}{\numberline {10.4}Computational Cost}{18}{subsection.10.4}%
+\contentsline {section}{\numberline {11}Maximum Likelihood Estimation}{19}{section.11}%
+\contentsline {subsection}{\numberline {11.1}Science Parameters}{19}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}True Signal Parameterisation}{19}{subsection.11.2}%
+\contentsline {section}{\numberline {12}Validation}{19}{section.12}%
