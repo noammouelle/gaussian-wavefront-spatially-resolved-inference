@@ -210,6 +210,30 @@ def profile_shot(x0, delta_phi_trial, acs_z0, acs_z100, n_g0, n_e0, n_g1, n_e1,
     return res.x, float(res.fun)
 
 
+# ── phi multi-start: fix for the multimodal-phi problem ─────────────────────
+# Diagnostic (1D NLL scan vs phi, theta held fixed) found 3-4 genuine local
+# minima per 2pi period for a subset of shots' phi landscape -- both fit_beta
+# (scipy L-BFGS-B, warm-started from phi=0) and fit_beta_batch (per-shot
+# L-BFGS, same phi=0 start) can lock onto whichever basin phi=0 happens to
+# fall into, and it's not always the best one (nor even the same one between
+# the two solvers). Since state['x'] is initialized ONCE before the outer
+# beta loop starts (and the first trial beta is ~0, so delta_phi_trial~0 at
+# that point), a coarse grid scan over phi at delta_phi_trial=0 and
+# theta=prior_mean -- picking the best as the initial phi instead of a fixed
+# 0.0 -- makes both solvers start in the same, better basin instead of
+# whichever one a fixed start happens to fall into.
+
+def _phi_prescan(acs_z0, acs_z100, n_g0, n_e0, n_g1, n_e1, prior_mean, prior_std, n_grid=12):
+    """Return the best phi in [-pi, pi) (theta at prior_mean, delta_phi_trial=0)
+    by direct NLL evaluation on a coarse grid -- cheap (no optimization) and
+    used only once, to pick a better initial phi than a fixed 0.0."""
+    phi_grid = np.linspace(-np.pi, np.pi, n_grid, endpoint=False)
+    nlls = [joint_nll(np.concatenate([[p], prior_mean, prior_mean]), 0.0,
+                       acs_z0, acs_z100, n_g0, n_e0, n_g1, n_e1, prior_mean, prior_std)
+            for p in phi_grid]
+    return float(phi_grid[int(np.argmin(nlls))])
+
+
 # ── outer beta loop, warm-starting each shot's nuisance state ───────────────
 
 def fit_beta(run_dir, n_shots, f_signal, prior_mean, prior_std, bins=16, pixel_n_gh=4,
@@ -236,8 +260,13 @@ def fit_beta(run_dir, n_shots, f_signal, prior_mean, prior_std, bins=16, pixel_n
         n_g1 = _downsample(n_g1, bins).ravel(); n_e1 = _downsample(n_e1, bins).ravel()
         counts.append((n_g0, n_e0, n_g1, n_e1))
 
-    # warm-started nuisance state, persists across outer-loop evaluations
-    state = {'x': [np.concatenate([[0.0], prior_mean, prior_mean]) for _ in shot_ids]}
+    # warm-started nuisance state, persists across outer-loop evaluations.
+    # phi0 per shot comes from a coarse pre-scan (see _phi_prescan) instead of
+    # a fixed 0.0, to reliably land in a good phi basin (see module-level
+    # comment above _phi_prescan for why this matters).
+    state = {'x': [np.concatenate([[_phi_prescan(acs_z0, acs_z100, *counts[k], prior_mean, prior_std)],
+                                    prior_mean, prior_mean])
+                   for k in range(len(shot_ids))]}
 
     def neg_logL(beta):
         As, Ac = float(beta[0]), float(beta[1])
@@ -670,7 +699,12 @@ def fit_beta_batch(run_dir, n_shots, f_signal, prior_mean, prior_std, bins=16, p
         n_g1[i] = _downsample(img1[0].astype(np.float64), bins).ravel()
         n_e1[i] = _downsample(img1[1].astype(np.float64), bins).ravel()
 
-    state = {'x': np.concatenate([np.zeros(N), np.tile(prior_mean, N), np.tile(prior_mean, N)])}
+    # phi0 per shot from a coarse pre-scan instead of a fixed 0.0 -- see
+    # _phi_prescan and the module-level comment above it.
+    phi0 = np.array([_phi_prescan(acs_z0, acs_z100, n_g0[i], n_e0[i], n_g1[i], n_e1[i],
+                                   prior_mean, prior_std)
+                      for i in range(N)])
+    state = {'x': np.concatenate([phi0, np.tile(prior_mean, N), np.tile(prior_mean, N)])}
 
     # Same divergence guard as profile_shot_analytic: bound theta to a
     # generous multiple of the prior width, and phi to a wide-but-finite range.
@@ -757,10 +791,18 @@ if __name__ == '__main__':
     p.add_argument('--pixel_n_gh', type=int, default=4)
     p.add_argument('--gh_order', type=int, default=4)
     p.add_argument('--f_signal', type=float, default=0.3)
-    p.add_argument('--n_inner_newton', type=int, default=3)
+    p.add_argument('--n_inner_newton', type=int, default=3,
+                    help='inner iterations per outer step, --mode loop only')
+    p.add_argument('--n_inner_iter', type=int, default=15,
+                    help='inner iterations per outer step, --mode batch only')
     p.add_argument('--n_starts', type=int, default=1)
     p.add_argument('--outer_maxiter', type=int, default=15)
     p.add_argument('--use_analytic', type=int, default=1)
+    p.add_argument('--mode', choices=['loop', 'batch'], default='loop',
+                    help='loop: fit_beta (per-shot scipy L-BFGS-B loop, reference). '
+                         'batch: fit_beta_batch (vectorized per-shot L-BFGS, batched GPU eval -- '
+                         'faster and scales better with n_shots, see solve_inner_batch_independent '
+                         'docstring for validation history).')
     args = p.parse_args()
 
     data_root = Path(args.data_root)
@@ -769,8 +811,15 @@ if __name__ == '__main__':
     prior_std = np.array([10e-6] * 4 + [10e-6] * 4)
 
     t0 = time.perf_counter()
-    beta_hat = fit_beta(run_dir, args.n_shots, args.f_signal, prior_mean, prior_std,
-                         bins=args.bins, pixel_n_gh=args.pixel_n_gh, gh_order=args.gh_order,
-                         n_inner_newton=args.n_inner_newton, n_starts=args.n_starts,
-                         outer_maxiter=args.outer_maxiter, use_analytic=bool(args.use_analytic))
-    print(f'\nFinal beta_hat (As, Ac) = {beta_hat}   (total {time.perf_counter()-t0:.1f}s)')
+    if args.mode == 'batch':
+        beta_hat = fit_beta_batch(run_dir, args.n_shots, args.f_signal, prior_mean, prior_std,
+                                   bins=args.bins, pixel_n_gh=args.pixel_n_gh,
+                                   n_inner_iter=args.n_inner_iter, n_starts=args.n_starts,
+                                   outer_maxiter=args.outer_maxiter)
+    else:
+        beta_hat = fit_beta(run_dir, args.n_shots, args.f_signal, prior_mean, prior_std,
+                             bins=args.bins, pixel_n_gh=args.pixel_n_gh, gh_order=args.gh_order,
+                             n_inner_newton=args.n_inner_newton, n_starts=args.n_starts,
+                             outer_maxiter=args.outer_maxiter, use_analytic=bool(args.use_analytic))
+    print(f'\nFinal beta_hat (As, Ac) = {beta_hat}   (mode={args.mode}, '
+          f'total {time.perf_counter()-t0:.1f}s)')
