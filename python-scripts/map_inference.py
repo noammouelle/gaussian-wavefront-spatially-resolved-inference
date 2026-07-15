@@ -84,6 +84,17 @@ except ImportError:
 DEFAULT_BINS      = 32
 DEFAULT_N_QMC_INT = 2048     # cloud QMC samples per shot per AI for ACS
 DEFAULT_N_THETA   = 128
+# NOTE: n_theta=128 (grid spacing ~0.049 rad) is only adequate for the phi
+# grid-marginalization ('grid' phi_method) at modest photon flux. At high flux
+# (e.g. A~1e8) the per-shot phi posterior becomes far narrower than the grid
+# spacing, and 'grid' silently returns a badly biased (beta) MAP estimate
+# (measured ~12% bias in As at A=1e8, run_000 of R40_N50_A1e8, shrinking away
+# only once n_theta is pushed to ~2000-8000). The 'laplace'/'point' phi_method
+# paths solve phi continuously per shot and do not suffer this discretization
+# bias, which is why they are the default and were used for all production
+# results in results/mle_distributions_*. If you use --phi_method grid at high
+# flux, verify convergence by checking that beta_hat is stable as --n_theta
+# is increased.
 DEFAULT_T_DET     = 3.8
 DEFAULT_MAX_SHOTS = None
 DEFAULT_GRID_N    = 31
@@ -397,6 +408,97 @@ def total_logL(beta, precomp_list, f_signal, shot_idx_arr, n_theta):
     return total
 
 
+# ── Fast per-shot phi optimization (point-estimate / Laplace) ──────────────────
+#
+# Replaces the n_theta-grid marginalization over the per-shot nuisance phase phi
+# with a direct optimization of the (already shown to be effectively unimodal)
+# combined z0+z100 per-shot log-likelihood, plus an optional Laplace (curvature)
+# correction that approximates the marginal integral. All shots are solved
+# simultaneously via vectorized numpy ops (cheap: pure arithmetic on the
+# precomputed ACS coefficients, no PSMAP re-evaluation).
+
+def _ai_ll_batch(phi, acs_arr, n_g, n_e):
+    """Per-shot Poisson log-likelihood at a single phi value per shot.
+    phi, n_g, n_e : (n_shots,)      acs_arr : (n_shots, 6)
+    """
+    EPS = 1e-300
+    A_g, Cc_g, Cs_g = acs_arr[:, 0], acs_arr[:, 1], acs_arr[:, 2]
+    A_e, Cc_e, Cs_e = acs_arr[:, 3], acs_arr[:, 4], acs_arr[:, 5]
+    A_tot, Cc_tot, Cs_tot = A_g + A_e, Cc_g + Cc_e, Cs_g + Cs_e
+    c, s = np.cos(phi), np.sin(phi)
+    totACS = A_tot + Cc_tot*c + Cs_tot*s
+    L_phi  = (n_g + n_e) / np.maximum(totACS, EPS)
+    lam_g  = L_phi * np.maximum(A_g + Cc_g*c + Cs_g*s, EPS)
+    lam_e  = L_phi * np.maximum(A_e + Cc_e*c + Cs_e*s, EPS)
+    return n_g*np.log(lam_g) - lam_g + n_e*np.log(lam_e) - lam_e
+
+
+def _combined_ll_batch(phi, acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1, dphi):
+    ll0 = _ai_ll_batch(phi,        acs_z0_arr,   n_g0, n_e0)
+    ll1 = _ai_ll_batch(phi + dphi, acs_z100_arr, n_g1, n_e1)
+    return ll0 + ll1
+
+
+def solve_phi_batch(acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1, dphi,
+                     n_scan=64, n_newton=12, h=1e-5):
+    """
+    Vectorized per-shot solve for the (single, dominant) combined-likelihood
+    optimum phi_i*, via a coarse scan (to seed the right basin) followed by
+    a few damped Newton polish steps on finite-difference derivatives.
+
+    Returns
+    -------
+    phi_star   : (n_shots,)  argmax location
+    ll_star    : (n_shots,)  log-likelihood at the optimum
+    curv       : (n_shots,)  curvature of -log-likelihood at the optimum (>=0)
+    """
+    n_shots = acs_z0_arr.shape[0]
+
+    def ll(phi_val):
+        return _combined_ll_batch(phi_val, acs_z0_arr, n_g0, n_e0,
+                                   acs_z100_arr, n_g1, n_e1, dphi)
+
+    scan = np.linspace(0.0, 2*np.pi, n_scan, endpoint=False)
+    best_ll  = np.full(n_shots, -np.inf)
+    best_phi = np.zeros(n_shots)
+    for p in scan:
+        cur = ll(np.full(n_shots, p))
+        better = cur > best_ll
+        best_ll  = np.where(better, cur, best_ll)
+        best_phi = np.where(better, p, best_phi)
+
+    phi = best_phi
+    for _ in range(n_newton):
+        f0, fp, fm = ll(phi), ll(phi + h), ll(phi - h)
+        grad = (fp - fm) / (2*h)
+        curv = -(fp - 2*f0 + fm) / h**2   # curvature of -ll (positive at a max of ll)
+        curv_safe = np.where(curv > 1e-8, curv, 1e-8)
+        step = np.clip(grad / curv_safe, -0.5, 0.5)
+        phi = phi + step
+
+    f0, fp, fm = ll(phi), ll(phi + h), ll(phi - h)
+    ll_star = f0
+    curv    = -(fp - 2*f0 + fm) / h**2
+    curv    = np.maximum(curv, 1e-8)
+    return phi, ll_star, curv
+
+
+def total_logL_fast(beta, acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1,
+                     f_signal, shot_idx_arr, phi_method='laplace',
+                     n_scan=64, n_newton=12):
+    As, Ac = float(beta[0]), float(beta[1])
+    dphi = As*np.sin(2*np.pi*f_signal*shot_idx_arr) + Ac*np.cos(2*np.pi*f_signal*shot_idx_arr)
+    _, ll_star, curv = solve_phi_batch(acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1,
+                                        dphi, n_scan=n_scan, n_newton=n_newton)
+    if phi_method == 'laplace':
+        log_terms = ll_star + 0.5*np.log(2*np.pi) - 0.5*np.log(curv)
+    elif phi_method == 'point':
+        log_terms = ll_star
+    else:
+        raise ValueError(f'unknown phi_method {phi_method!r}')
+    return float(np.sum(log_terms))
+
+
 # ── Per-run inference ──────────────────────────────────────────────────────────
 
 def _run_one(data_dir, acs_z0, acs_z100, m_eta, K, A_m_eta, args, log):
@@ -503,8 +605,21 @@ def _run_one(data_dir, acs_z0, acs_z100, m_eta, K, A_m_eta, args, log):
             'delta_phi_true': float(meta1['delta_phi']),
         })
 
-    def neg_logL(beta):
-        return -total_logL(beta, precomp_list, f_signal, shot_idx_arr, args.n_theta)
+    phi_method = getattr(args, 'phi_method', 'grid')
+    if phi_method == 'grid':
+        def neg_logL(beta):
+            return -total_logL(beta, precomp_list, f_signal, shot_idx_arr, args.n_theta)
+    else:
+        n_g0_arr = np.array([c[0] for c in counts_z0]);   n_e0_arr = np.array([c[1] for c in counts_z0])
+        n_g1_arr = np.array([c[0] for c in counts_z100]); n_e1_arr = np.array([c[1] for c in counts_z100])
+        n_scan   = getattr(args, 'phi_n_scan', 64)
+        n_newton = getattr(args, 'phi_n_newton', 12)
+
+        def neg_logL(beta):
+            return -total_logL_fast(beta, acs_z0_arr, n_g0_arr, n_e0_arr,
+                                     acs_z100_arr, n_g1_arr, n_e1_arr,
+                                     f_signal, shot_idx_arr, phi_method=phi_method,
+                                     n_scan=n_scan, n_newton=n_newton)
 
     t0 = time.perf_counter()
     ll_true = -neg_logL((As_true, Ac_true))
@@ -572,6 +687,20 @@ def main():
     p.add_argument('--gh_order',    type=int,   default=3,
                    help='GH points per dimension (gh mode only); n^4 total, default 3 → 81 pts')
     p.add_argument('--n_theta',     type=int,   default=DEFAULT_N_THETA)
+    p.add_argument('--phi_method',  type=str,   default='laplace',
+                   choices=['grid', 'laplace', 'point'],
+                   help="per-shot nuisance-phase handling: 'laplace' (default) optimizes phi "
+                        "continuously per shot with a curvature correction approximating the "
+                        "marginal integral; 'point' is the same optimum without the correction; "
+                        "'grid' marginalizes on a fixed n_theta grid and is ONLY safe when "
+                        "n_theta is fine enough to resolve the per-shot phi posterior width -- "
+                        "at high photon flux (e.g. A~1e8) the default n_theta=128 grid is far "
+                        "too coarse and silently biases beta_hat (~12%% bias observed on As at "
+                        "A=1e8 with n_theta=128; converges away only above n_theta~2000-8000)")
+    p.add_argument('--phi_n_scan',   type=int, default=64,
+                   help='coarse scan points to seed the phi optimum (laplace/point only)')
+    p.add_argument('--phi_n_newton', type=int, default=12,
+                   help='Newton polish iterations for the phi optimum (laplace/point only)')
     p.add_argument('--t_det',       type=float, default=DEFAULT_T_DET)
     p.add_argument('--max_shots',   type=int,   default=DEFAULT_MAX_SHOTS)
     p.add_argument('--grid_n',      type=int,   default=DEFAULT_GRID_N)

@@ -259,6 +259,105 @@ class SurrogatePixelACS:
 
         return dphi_out, amp0_out, amp1_out
 
+    @staticmethod
+    def _cr_weights_deriv(t):
+        """d/dt of _cr_weights: closed-form, since each weight is a cubic
+        polynomial in t. Same (4, n_quad) shape/stencil-index convention as
+        _cr_weights."""
+        t2 = t * t
+        return cp.stack([
+            -0.5 + 2.0 * t - 1.5 * t2,
+            -5.0 * t + 4.5 * t2,
+             0.5 + 4.0 * t - 4.5 * t2,
+            -t + 1.5 * t2,
+        ])  # (4, n_quad)
+
+    def _eval_fast_grad(self, x0_g, y0_g, vx0_g, vy0_g):
+        """
+        Value AND analytic gradient (w.r.t. x0,y0,vx0,vy0) of the Catmull-Rom
+        interpolant, via the closed-form derivative of the cubic weight
+        polynomials -- see profile_cloud_nuisances module docstring context /
+        session notes on analytic PSMAP derivatives for the derivation.
+
+        d(interp)/dx0 = (1/dx) * sum_corners grid[c] * wx'(tx) * wy(ty) * wvx(tvx) * wvy(tvy)
+        and symmetrically for y0, vx0, vy0 (swap in the derivative weight for
+        exactly one of the four factors).
+
+        NOTE: _find_cell clips tx (etc.) to [0,1], so at grid-boundary cells
+        the true derivative has a kink there; for interior points (the
+        normal case) this is exact, not a finite-difference approximation.
+
+        Returns: (dphi, amp0, amp1) each (n_quad, nP), and grads, a dict with
+        keys 'x0','y0','vx0','vy0', each an (n_quad, nP, 3) array of
+        [d(dphi), d(amp0), d(amp1)] w.r.t. that coordinate.
+        """
+        ix,  tx  = self._find_cell(x0_g,  self._x_lo,  self._dx,  self._nx_m1)
+        iy,  ty  = self._find_cell(y0_g,  self._y_lo,  self._dy,  self._ny_m1)
+        ivx, tvx = self._find_cell(vx0_g, self._vx_lo, self._dvx, self._nvx_m1)
+        ivy, tvy = self._find_cell(vy0_g, self._vy_lo, self._dvy, self._nvy_m1)
+
+        # _find_cell clips BOTH the cell index and the fractional coordinate at
+        # the grid boundary, so the interpolated VALUE is pinned flat beyond the
+        # domain edge (extrapolation-by-constant). The raw cubic-weight derivative
+        # doesn't know about that clipping and returns a nonzero polynomial slope
+        # regardless -- wrong wherever the point actually fell outside the grid.
+        # Zero the corresponding derivative there to match the true (flat) value
+        # function. This matters in practice: SemiAnalyticPixelACS's conditional-
+        # velocity construction can push far from grid center for pixels near the
+        # edge of a wide image.
+        in_x  = (x0_g  >= self._x_lo)  & (x0_g  <= self._x_lo  + self._nx_m1  * self._dx)
+        in_y  = (y0_g  >= self._y_lo)  & (y0_g  <= self._y_lo  + self._ny_m1  * self._dy)
+        in_vx = (vx0_g >= self._vx_lo) & (vx0_g <= self._vx_lo + self._nvx_m1 * self._dvx)
+        in_vy = (vy0_g >= self._vy_lo) & (vy0_g <= self._vy_lo + self._nvy_m1 * self._dvy)
+
+        wx  = self._cr_weights(tx);  dwx  = self._cr_weights_deriv(tx) * in_x[None, :]
+        wy  = self._cr_weights(ty);  dwy  = self._cr_weights_deriv(ty) * in_y[None, :]
+        wvx = self._cr_weights(tvx); dwvx = self._cr_weights_deriv(tvx) * in_vx[None, :]
+        wvy = self._cr_weights(tvy); dwvy = self._cr_weights_deriv(tvy) * in_vy[None, :]
+
+        wx_o, wy_o, wvx_o, wvy_o = wx[self._ox], wy[self._oy], wvx[self._ovx], wvy[self._ovy]
+        w = wx_o * wy_o * wvx_o * wvy_o
+
+        w_dx0 = (dwx[self._ox] / self._dx)  * wy_o * wvx_o * wvy_o
+        w_dy0 = wx_o * (dwy[self._oy] / self._dy)  * wvx_o * wvy_o
+        w_dvx = wx_o * wy_o * (dwvx[self._ovx] / self._dvx) * wvy_o
+        w_dvy = wx_o * wy_o * wvx_o * (dwvy[self._ovy] / self._dvy)
+
+        ix_c  = cp.clip(ix [None] + self._ox [:, None] - 1, 0, self._nx_m1)
+        iy_c  = cp.clip(iy [None] + self._oy [:, None] - 1, 0, self._ny_m1)
+        ivx_c = cp.clip(ivx[None] + self._ovx[:, None] - 1, 0, self._nvx_m1)
+        ivy_c = cp.clip(ivy[None] + self._ovy[:, None] - 1, 0, self._nvy_m1)
+
+        nP = self.nP
+        pi_idx = cp.arange(nP, dtype=cp.int32)[:, None, None]
+        ix_e = ix_c[None]; iy_e = iy_c[None]; ivx_e = ivx_c[None]; ivy_e = ivy_c[None]
+
+        def _gather_sum(stack, weights, rebase=False):
+            corners = stack[pi_idx, ix_e, iy_e, ivx_e, ivy_e]   # (nP, 256, n_quad)
+            if rebase:
+                # dphi is an UNWRAPPED accumulated phase and can be O(1e8) in
+                # magnitude (unlike amp0/amp1 which stay O(1)); the derivative
+                # weights sum to exactly 0 in exact arithmetic, so subtracting
+                # any common reference from all 256 corners before the weighted
+                # sum is mathematically identical but removes the catastrophic
+                # cancellation that occurs when weighting near-cancelling huge
+                # values directly. Only needed (and only applied) for the
+                # derivative weight sets, not the 'value' interpolation itself.
+                corners = corners - corners[:, :1, :]
+            return (corners * weights[None]).sum(1)
+
+        out = {}
+        for label, wt in [('value', w), ('x0', w_dx0), ('y0', w_dy0), ('vx0', w_dvx), ('vy0', w_dvy)]:
+            is_deriv = (label != 'value')
+            dphi_o = _gather_sum(self._dphi_stack, wt, rebase=is_deriv).T
+            amp0_o = _gather_sum(self._amp0_stack, wt, rebase=is_deriv).T
+            amp1_o = _gather_sum(self._amp1_stack, wt, rebase=is_deriv).T
+            out[label] = (dphi_o, amp0_o, amp1_o)
+
+        dphi_out, amp0_out, amp1_out = out['value']
+        grads = {k: out[k] for k in ('x0', 'y0', 'vx0', 'vy0')}
+        return dphi_out, amp0_out, amp1_out, grads
+
     def pixel_acs(self, theta):
         """
         theta : (8,) — [mu_x0, mu_y0, mu_vx0, mu_vy0, sx0, sy0, svx0, svy0]
@@ -353,6 +452,7 @@ class SemiAnalyticPixelACS:
 
         # Borrow GPU interpolation infrastructure
         self._eval_fast  = surrogate_acs._eval_fast   # bound method
+        self._eval_fast_grad = surrogate_acs._eval_fast_grad   # bound method
         self._port_inter = surrogate_acs._port_inter
         self.s0_g        = surrogate_acs.s0_g
         self.s1_g        = surrogate_acs.s1_g

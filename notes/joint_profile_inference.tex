@@ -1,0 +1,726 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{xcolor}
+
+\geometry{margin=2.5cm}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Lcal}{\mathcal{L}}
+\newcommand{\q}{\mathbf{q}}
+\newcommand{\x}{\mathbf{x}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\todo}[1]{\textcolor{red}{[OPEN: #1]}}
+
+\title{%
+  Nested Profile-Likelihood Inference of $(A_s,A_c)$\\
+  from the Full Pixel Image\\[4pt]
+  \large \code{python-scripts/joint\_profile\_inference.py}
+}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+%%============================================================
+\section{Purpose and Relationship to Other Estimators}
+%%============================================================
+
+This note documents \code{joint\_profile\_inference.py}, an estimator of the
+gradiometer signal $\beta = (A_s, A_c)$ (notation as in
+\code{notes/image\_likelihood.tex}) that profiles \emph{every} per-shot
+nuisance parameter --- the common laser phase $\phi_i$ and both clouds'
+8-dimensional state $\eta_{i,z=0}, \eta_{i,z=100}$ --- directly against the
+full pixel-binned Poisson likelihood, jointly with the outer optimisation
+over $\beta$, rather than against a reduced summary (port counts or image
+moments).
+
+\paragraph{Why this exists.} \code{crb\_signal.py}'s Cram\'er--Rao analysis
+showed that the port-summed/moment-based pipeline (\code{map\_inference.py})
+retains only $\sim\!9\%$ of the Fisher information available in $\phi_i$ once
+realistic cloud-parameter uncertainty is propagated, whereas the full
+pixel-resolved likelihood retains $\sim\!96\%$ (each AI's $(\phi,\eta)$
+Fisher block goes from rank~1, in the port-summed reduction, to full rank~9
+once individual pixel counts are used --- see
+\code{crb\_signal.pixel\_fisher\_block}). This script is the estimator
+designed to realise that gain in an actual per-shot fit, not just in a
+Fisher-information forecast.
+
+\paragraph{Relationship to other pipelines in this repo.}
+\begin{itemize}
+  \item \code{map\_inference.py} profiles a 4-moment Kalman summary of
+    $\eta_{iz}$ and marginalises $\phi_i$ on a grid (Section~2 of
+    \code{notes/image\_likelihood.tex}). Cheap, but discards spatial
+    information beyond the first two moments.
+  \item \code{full\_image\_is\_inference.py} uses the full pixel image but
+    marginalises $\eta$ by importance sampling from a moment-posterior
+    proposal (Section~7 of \code{notes/image\_likelihood.tex}).
+  \item \textbf{This script} uses the full pixel image and \emph{profiles}
+    (point-estimates, does not marginalise) $\eta_{iz}$ \emph{and} $\phi_i$
+    jointly, re-solving both at every trial $\beta$. It is the most
+    computationally direct realisation of the full-information estimate,
+    at the cost of the heaviest per-evaluation optimisation.
+\end{itemize}
+
+%%============================================================
+\section{Per-Shot Pixel Likelihood (Recap)}
+\label{sec:likelihood}
+%%============================================================
+
+This section restates, without re-deriving, the model shared with
+\code{notes/image\_likelihood.tex} (Sections 1--3 there), fixing notation for
+what follows.
+
+\subsection{Parameters}
+
+\begin{itemize}
+  \item $\beta = (A_s, A_c)$: the two signal amplitudes (science parameters).
+  \item $\phi_i$: common laser phase for shot $i$, shared by both AIs,
+    a priori $\mathrm{Uniform}(0,2\pi)$.
+  \item $\delta\phi_i(\beta) = A_s\sin(2\pi f t_i) + A_c\cos(2\pi f t_i)$:
+    the injected differential phase at AI $z=100$ (zero at $z=0$).
+  \item $\theta_{iz} = (\mu_{x_0},\mu_{y_0},\mu_{v_x},\mu_{v_y},
+    \sigma_{x_0},\sigma_{y_0},\sigma_{v_x},\sigma_{v_y})_{iz} \in \R^8$: the
+    initial phase-space Gaussian cloud parameters for AI $z\in\{0,100\}$ in
+    shot $i$ (called \code{eta} elsewhere in the repo; renamed $\theta$ here
+    to match the source file's variable names).
+\end{itemize}
+
+The full per-shot parameter vector profiled by this script is
+\begin{equation}
+  x_i = (\phi_i,\ \theta_{i,0},\ \theta_{i,100}) \in \R^{17}.
+  \label{eq:xi}
+\end{equation}
+
+\subsection{Pixel Rate and Poisson Likelihood}
+
+For AI $z$, state $s\in\{g,e\}$ (ground/bright, excited/dark port group),
+pixel $b$:
+\begin{equation}
+  \lambda_{izsb}
+  = L_{iz}\bigl[A_{zsb}(\theta_{iz}) + C^c_{zsb}(\theta_{iz})\cos\Phi_{iz}
+                                     + C^s_{zsb}(\theta_{iz})\sin\Phi_{iz}\bigr],
+  \qquad
+  \Phi_{iz} = \phi_i + \delta\phi_i(\beta)\,[z{=}100],
+  \label{eq:lambda}
+\end{equation}
+with $n_{izsb}\sim\mathrm{Poisson}(\lambda_{izsb})$ and $L_{iz}$ the
+atom-number scale factor (plug-in normalisation matching predicted to
+observed total counts, Eq.~\ref{eq:Lfix-recap} below; \emph{not} a free
+parameter). The code's variable names for $(A,C^c,C^s)$ per state are
+\code{A\_g,Cc\_g,Cs\_g} (state $g$) and \code{A\_e,Cc\_e,Cs\_e} (state $e$),
+returned as \code{(n\_bins,)} arrays by \code{acs\_obj.pixel\_acs(theta)}
+(Section~\ref{sec:acs}).
+
+The per-shot, per-AI negative log-likelihood implemented in
+\code{\_ai\_nll\_only}/\code{\_ai\_nll\_and\_grad\_analytic} is
+\begin{equation}
+  -\log\Lcal_{iz}(\theta_{iz},\Phi_{iz})
+  = \sum_b\Bigl[\mu_{gb} - n_{gb}\log\mu_{gb}\Bigr]
+   +\sum_b\Bigl[\mu_{eb} - n_{eb}\log\mu_{eb}\Bigr],
+  \qquad \mu_{sb} \equiv \lambda_{izsb},
+  \label{eq:nll_ai}
+\end{equation}
+(constants $\log n!$ dropped), with the scale factor computed \emph{inline,
+at every evaluation}, not cached from a separate profiling pass:
+\begin{equation}
+  L_{iz} = \frac{\sum_b (n_{gb}+n_{eb})}{\max\bigl(\sum_b(I_{gb}+I_{eb}),\,\varepsilon\bigr)},
+  \qquad I_{sb} = A_{sb} + C^c_{sb}\cos\Phi_{iz} + C^s_{sb}\sin\Phi_{iz},
+  \label{eq:Lfix-recap}
+\end{equation}
+$\varepsilon = 10^{-300}$ (\code{crb.EPS}). Because $L_{iz}$ is recomputed
+from $(A,C^c,C^s)$ at the \emph{current} $(\theta,\Phi)$ every call, it is
+implicitly profiled out analytically at every point visited by the
+optimiser, not held fixed at a reference point as in the moment pipeline's
+$\hat\eta$-then-fix convention.
+
+The joint per-shot objective actually minimised
+(\code{joint\_nll}/\code{joint\_nll\_and\_grad\_analytic}) is
+\begin{equation}
+  \boxed{
+  F_i(x_i;\,\delta\phi_i^{\rm trial})
+  = -\log\Lcal_{i,0}(\theta_{i,0},\phi_i)
+    -\log\Lcal_{i,100}(\theta_{i,100},\phi_i+\delta\phi_i^{\rm trial})
+    + \frac{1}{2}\Bigl\|\tfrac{\theta_{i,0}-\bar\theta}{\sigma_\theta}\Bigr\|^2
+    + \frac{1}{2}\Bigl\|\tfrac{\theta_{i,100}-\bar\theta}{\sigma_\theta}\Bigr\|^2,
+  }
+  \label{eq:Fi}
+\end{equation}
+where $\bar\theta,\sigma_\theta$ are the (identical, independent) Gaussian
+prior mean/std for both AIs' clouds (\code{prior\_mean}, \code{prior\_std}
+arguments; matches the dataset's generation hyperparameters, van Trees /
+Bayesian-profiling convention, same as Section~2.3 of
+\code{notes/image\_likelihood.tex}). $\phi_i$ carries \emph{no} prior term
+(flat), consistent with $\phi_i\sim\mathrm{Uniform}(0,2\pi)$ --- but note
+that here $\phi_i$ is \emph{profiled} (point-estimated) jointly with
+$\theta$, not \emph{marginalised} over a phase grid as in
+\code{map\_inference.py}/\code{full\_image\_is\_inference.py}. This is a
+genuine modelling difference, not just an implementation shortcut: see
+\S\ref{sec:assumptions}.
+
+%%============================================================
+\section{Pixel ACS via Exact CDF $\times$ 2D Gauss--Hermite}
+\label{sec:acs}
+%%============================================================
+
+$(A_{zsb}, C^c_{zsb}, C^s_{zsb})$ are computed by
+\code{SemiAnalyticPixelACS.pixel\_acs} (\code{profile\_cloud\_nuisances.py}),
+identical to the evaluator already documented in Section~7.3 of
+\code{notes/image\_likelihood.tex}; restated compactly here since it is the
+main cost driver.
+
+\begin{enumerate}
+  \item \textbf{Detection-plane Gaussian.} Free ballistic flight for time
+    $T=t_\mathrm{det}$:
+    \begin{equation}
+      \mu_{xf} = \mu_{x_0} + T\mu_{v_x}, \qquad
+      \sigma_{xf}^2 = \sigma_{x_0}^2 + (T\sigma_{v_x})^2,
+    \end{equation}
+    and identically for $y$.
+
+  \item \textbf{Exact spatial weight.} Bin occupancy probability via the
+    Gaussian CDF (no quadrature error, never zero):
+    \begin{equation}
+      P_b = \bigl[\Phi\bigl(\tfrac{x_{b,\rm hi}-\mu_{xf}}{\sigma_{xf}}\bigr)
+                 - \Phi\bigl(\tfrac{x_{b,\rm lo}-\mu_{xf}}{\sigma_{xf}}\bigr)\bigr]
+            \times \bigl[y\text{-analogue}\bigr].
+    \end{equation}
+
+  \item \textbf{Conditional velocity distribution at the bin centre}
+    $(x_b,y_b)$ (standard Gaussian conditioning, decoupled in $x$/$y$):
+    \begin{equation}
+      v_{x_0}\mid x_b \sim \N\!\Bigl(
+        \mu_{v_x} + \tfrac{T\sigma_{v_x}^2}{\sigma_{xf}^2}(x_b-\mu_{xf}),\;
+        \tfrac{\sigma_{v_x}^2\sigma_{x_0}^2}{\sigma_{xf}^2}\Bigr),
+    \end{equation}
+    and identically for $v_{y_0}\mid y_b$.
+
+  \item \textbf{2D Gauss--Hermite quadrature} ($n_{\rm gh}$ nodes per
+    velocity dimension, $n_v=n_{\rm gh}^2$ nodes total per bin) over this
+    conditional distribution gives the initial phase-space sample points
+    $(x_0,y_0,v_{x_0},v_{y_0})$ fed to the PSMAP lookup
+    (\S\ref{sec:psmap}), one full grid of $n_v$ nodes \emph{per bin},
+    processed \code{chunk\_bins} bins at a time to bound GPU memory.
+
+  \item \textbf{Port sum and GH average.} PSMAP outputs
+    $(\Delta\phi_p,\,a_{0p},\,a_{1p})$ per port $p$ (\S\ref{sec:psmap}) give
+    \begin{equation}
+      A_p = a_{0p}^2+a_{1p}^2,\quad
+      C^c_p = \iota_p\,2a_{0p}a_{1p}\cos\Delta\phi_p,\quad
+      C^s_p = -\iota_p\,2a_{0p}a_{1p}\sin\Delta\phi_p,
+    \end{equation}
+    ($\iota_p=$ \code{port\_inter}, an interference sign/weight per port),
+    summed over the ports belonging to state $s$ (boolean masks
+    \code{s0\_g}, \code{s1\_g}), GH-averaged over the $n_v$ velocity nodes
+    with weights $w_2$, and multiplied by $P_b$:
+    \begin{equation}
+      A_{zsb} = P_b\sum_{v=1}^{n_v} w_{2v}\sum_{p\in s} A_{p}(\text{node }v),
+      \qquad\text{(and likewise for }C^c_{zsb}, C^s_{zsb}\text{)}.
+    \end{equation}
+\end{enumerate}
+
+Default $n_{\rm gh}=20$ in \code{profile\_cloud\_nuisances.py}'s own CLI,
+but \code{joint\_profile\_inference.py} passes it through as
+\code{pixel\_n\_gh} with a much smaller default of \textbf{4}
+($n_v=16$ nodes/bin) --- see \S\ref{sec:reproducibility} for the
+cost/accuracy trade-off this implies.
+
+%%============================================================
+\section{PSMAP Lookup: Catmull--Rom Interpolation and its Analytic Derivative}
+\label{sec:psmap}
+%%============================================================
+
+This section is \emph{not} covered elsewhere in the notes tree and is
+specific to the analytic-gradient machinery
+(\code{pixel\_acs\_grad.py}, \code{pixel\_acs\_grad\_batch.py}) built for
+this estimator.
+
+\subsection{Value: 4D Cubic Interpolation}
+
+The precomputed PSMAP is a 4D grid over $(x,y,v_x,v_y)$, one grid per
+"port" $p=1,\ldots,n_P$ (a port being one interfering/non-interfering
+branch of the atom-interferometer sequence), storing the accumulated phase
+$\Delta\phi_p$ and two beam-splitter amplitudes $a_{0p},a_{1p}$. For a query
+point $(x_0,y_0,v_{x_0},v_{y_0})$, each of the 4 coordinates is located in
+its grid cell with a fractional offset $t\in[0,1]$, and the interpolated
+value is a \textbf{Catmull--Rom cubic} tensor product over the
+$4^4=256$ surrounding corners:
+\begin{equation}
+  \hat f(x_0,y_0,v_{x_0},v_{y_0})
+  = \sum_{k_x,k_y,k_{vx},k_{vy}=0}^{3}
+    w_x(t_x)_{k_x}\,w_y(t_y)_{k_y}\,w_{v_x}(t_{v_x})_{k_{vx}}\,w_{v_y}(t_{v_y})_{k_{vy}}\;
+    f[\text{corner}],
+  \label{eq:cr_interp}
+\end{equation}
+where each $w(\cdot)_k$, $k=0,\ldots,3$ (stencil offsets $-1,0,1,2$ from the
+cell floor), is the standard Catmull--Rom cubic-polynomial weight in $t$.
+This is the same interpolation scheme as \code{SurrogatePixelACS.\_eval\_fast}
+documented for \code{PSMAPSurrogate} generally; what is new here is the
+gradient.
+
+\subsection{Analytic Gradient}
+
+Because each $w(t)_k$ is an explicit cubic polynomial in $t$, its derivative
+$w'(t)_k$ is also a closed-form polynomial (\code{\_cr\_weights\_deriv}), so
+\begin{equation}
+  \frac{\partial \hat f}{\partial x_0}
+  = \frac{1}{\Delta x}\sum_{\rm corners} w_x'(t_x)_{k_x}\,w_y(t_y)_{k_y}\,
+    w_{v_x}(t_{v_x})_{k_{vx}}\,w_{v_y}(t_{v_y})_{k_{vy}}\; f[\text{corner}],
+  \label{eq:cr_grad}
+\end{equation}
+and symmetrically for $y_0,v_{x_0},v_{y_0}$ --- an \emph{exact} derivative
+of the interpolant, not a finite-difference approximation, at a cost of one
+extra weighted gather per coordinate (4 total) rather than re-touching the
+expensive per-port stacked-grid gather with perturbed inputs.
+
+Two implementation details, both load-bearing for correctness:
+\begin{itemize}
+  \item \textbf{Boundary clipping.} \code{\_find\_cell} clips both the cell
+    index and the fractional coordinate $t$ at the grid edge, so the
+    interpolated \emph{value} is pinned flat outside the domain
+    (extrapolation-by-constant). The raw polynomial derivative does not
+    know about this and would return a spurious nonzero slope there; it is
+    explicitly zeroed for out-of-bounds points (\code{in\_x}, \code{in\_y},
+    \code{in\_vx}, \code{in\_vy} masks) to match the true (flat) value
+    function.
+  \item \textbf{Catastrophic cancellation in $\Delta\phi$.} The phase field
+    $\Delta\phi_p$ is an unwrapped accumulated phase, $O(10^8)$ in
+    magnitude, unlike $a_0,a_1=O(1)$. The 256 corner weights used for a
+    \emph{derivative} sum to exactly zero in exact arithmetic, so summing
+    $w'_k\,\Delta\phi[\text{corner}_k]$ directly loses essentially all
+    significant digits to cancellation. Subtracting a common per-query
+    reference value from all 256 corners before the weighted sum
+    (\code{rebase=True} in \code{\_gather\_sum}) is mathematically
+    identical (the weights still sum to zero, so a constant shift is
+    annihilated) but removes the cancellation. This rebasing is applied
+    \emph{only} to the four derivative gathers, not the value gather.
+\end{itemize}
+
+\subsection{Chaining Through to $\theta$}
+
+The map $\theta \to (x_0,y_0,v_{x_0},v_{y_0})$ (cloud parameters to PSMAP
+sample points, \S\ref{sec:acs}, steps 1--3) is pure elementary arithmetic
+--- it never touches the PSMAP lookup --- so its Jacobian is obtained by
+\emph{cheap} central finite differences (step $h_\theta$, hardcoded
+$10^{-9}$ in the batched path, $10^{-7}$ in an unused/dead local variable in
+\code{fit\_beta} --- see \S\ref{sec:assumptions}) and chained with the
+analytic $\partial \hat f/\partial(x_0,y_0,v_{x_0},v_{y_0})$ from
+Eq.~\ref{eq:cr_grad} via the chain rule. This hybrid
+(analytic-through-the-expensive-part, finite-difference-through-the-cheap-part)
+is what \code{pixel\_acs\_and\_grad}/\code{pixel\_acs\_and\_grad\_batch}
+compute, returning both the 6-tuple $(A_g,C^c_g,C^s_g,A_e,C^c_e,C^s_e)$ and
+its $(8,6,n_{\rm bins})$ (single-shot) or $(N,8,6,n_{\rm bins})$ (batched)
+gradient w.r.t.\ $\theta$. $\partial/\partial\phi$ is fully analytic
+(plain $\cos/\sin$ chain rule on Eq.~\ref{eq:lambda}), since $\phi$ enters
+the model only trigonometrically and never touches the PSMAP call.
+
+%%============================================================
+\section{Nested Profiling: Arrow Sparsity}
+\label{sec:arrow}
+%%============================================================
+
+Collect all shots' nuisances and the signal into one vector
+$(\beta,\, x_1,\ldots,x_{N_\mathrm{shots}})\in\R^{2+17N}$. Because shot
+$i$'s likelihood depends on $x_i$ and $\beta$ only (never on $x_j$,
+$j\neq i$), the joint Fisher/Hessian matrix has exact \textbf{arrow
+sparsity}: the $(2+17N)\times(2+17N)$ matrix is dense only in the leading
+$2\times2$ block and the first two rows/columns; every $x_i$ block is
+block-diagonal and couples \emph{only} to $\beta$, never to another shot.
+
+This licenses an exact reduction (not an additional approximation) of the
+joint MLE to:
+\begin{quote}
+  \textbf{outer} step on $\beta$ (2 parameters), each evaluation requiring
+  an \textbf{inner} per-shot solve of $x_i=(\phi_i,\theta_{i,0},\theta_{i,100})$
+  (17 parameters, $N_\mathrm{shots}$ independent, embarrassingly
+  parallel problems), warm-started from the previous outer iteration's
+  solution.
+\end{quote}
+This is explicitly \emph{not} the same as profiling $\theta$ once at a
+reference $\beta$ and holding it fixed (valid for the moment pipeline,
+Section~2.4 of \code{notes/image\_likelihood.tex}, because
+$\eta$ is only weakly coupled to $\beta$ there): the module docstring
+records that $\theta$ (especially the weakly-identified
+ridge/width directions, Section~4.2 of \code{notes/image\_likelihood.tex})
+was empirically observed to shift by 6--24 posterior-$\sigma$ as $\beta$
+sweeps a realistic range, so $\theta$ \emph{must} be re-profiled at (or
+near) every trial $\beta$ visited by the outer optimiser --- hence the
+nested structure rather than a two-pass profile-then-fix scheme.
+
+%%============================================================
+\section{Inner Solve: Per-Shot $(\phi_i,\theta_{i,0},\theta_{i,100})$}
+\label{sec:inner}
+%%============================================================
+
+Given a trial $\delta\phi_i^{\rm trial}=\delta\phi_i(\beta)$ and a warm-start
+$x_i^{(0)}$ (from the previous outer iteration; initialised at
+$(\phi=0,\theta_{i,0}=\bar\theta,\theta_{i,100}=\bar\theta)$ on the very
+first outer evaluation), the inner solve is
+\begin{equation}
+  \hat x_i(\beta) = \arg\min_{x_i} F_i(x_i;\delta\phi_i^{\rm trial})
+  \label{eq:inner}
+\end{equation}
+via bounded L-BFGS-B (\code{scipy.optimize.minimize}). Two implementations
+exist, differing only in how the gradient is supplied:
+
+\begin{itemize}
+  \item \code{profile\_shot} (\code{joint\_nll}): scipy's own internal
+    finite-difference gradient. Slower, but with "much less risk of a
+    subtle sign/indexing bug" (module docstring) --- the deliberately
+    simple reference path. \textbf{No bounds are passed} to this
+    \code{minimize} call (an asymmetry with the analytic path below;
+    see \S\ref{sec:assumptions}).
+  \item \code{profile\_shot\_analytic} (\code{joint\_nll\_and\_grad\_analytic}):
+    the hybrid analytic gradient of \S\ref{sec:psmap}, supplied via
+    \code{jac=True}.
+\end{itemize}
+
+\subsection{Bounds (analytic path only)}
+
+\begin{equation}
+  \phi_i \in [-50,\,50]\ \text{rad (effectively unconstrained)},\qquad
+  \theta_{iz,k} \in \bar\theta_k \pm 20\,\sigma_{\theta,k}\quad\forall k.
+\end{equation}
+These are numerical safety rails, not part of the statistical model: an
+unbounded solve was observed directly to diverge (gradient norm
+\emph{growing} with more iterations rather than shrinking) by chasing a
+spurious unbounded-improvement direction, motivating the generous but
+finite $\theta$ bound.
+
+\subsection{Objective Rescaling}
+
+Per-shot NLL is $O(10^7)$ (high photon counts), so raw gradients are
+$O(10^5\text{--}10^8)$, well outside the regime L-BFGS-B's default
+step-size heuristics (tuned for $O(1)$ objectives) are designed for. The
+objective and gradient are both rescaled by a constant
+$c = 1/\max(\|g_{\rm probe}\|,\,1)$, computed once (cached in
+\code{\_scale\_cache}) from the gradient at the very first call, before the
+optimiser sees them. This is a pure rescaling --- it does not move the
+arg\-min --- but is essential for L-BFGS-B's step-size selection to behave
+sanely.
+
+\subsection{Convergence Check and the Envelope-Theorem Shortcut}
+\label{sec:envelope}
+
+After \code{n\_iter} L-BFGS-B iterations, the \emph{unscaled} gradient at
+the reported solution is recomputed and its norm compared against
+$\code{grad\_tol}\times\max(|\mathrm{NLL}|,1)$; if this is exceeded, a
+\code{UserWarning} is raised (\emph{"inner solve NOT converged ...
+envelope-theorem outer gradient is unreliable here"}).
+
+This check exists because \code{profile\_shot\_analytic} also returns
+\begin{equation}
+  \frac{\partial \mathrm{NLL}_{i,100}}{\partial\,\delta\phi_i^{\rm trial}}
+  \Bigg|_{\hat x_i},
+\end{equation}
+which, \textbf{by the envelope theorem, equals}
+$\partial F_i/\partial\,\delta\phi_i^{\rm trial}$ exactly \emph{at a true
+stationary point} of the inner objective (the $z{=}0$ contribution and all
+implicit $\partial\hat x_i/\partial\,\delta\phi_i^{\rm trial}$ terms vanish
+there). This is what lets the outer gradient be computed \emph{without}
+differentiating through the inner \code{arg min} --- but the identity is
+only exact at convergence, so the diagnostic in this subsection is not
+optional decoration: an unconverged inner solve silently produces a biased
+outer gradient with no other symptom.
+
+%%============================================================
+\section{Outer Solve: $\beta=(A_s,A_c)$}
+\label{sec:outer}
+%%============================================================
+
+Bounded L-BFGS-B over $\beta\in[-\code{grid\_half},\code{grid\_half}]^2$
+(default $\code{grid\_half}=0.2$\,rad), multi-start from
+$\{(0,0)\}\cup\{(0.05,0),(-0.05,0.05)\}[:\code{n\_starts}{-}1]$, best of the
+\code{n\_starts} local solutions kept. \textbf{Two outer implementations
+exist}, and they are \emph{not} structurally symmetric:
+
+\subsection{\code{fit\_beta} --- Per-Shot Python Loop}
+
+For each trial $\beta$: loop over shots, calling \code{profile\_shot} or
+\code{profile\_shot\_analytic} once per shot (warm-started from
+\code{state['x'][k]}, updated in place), summing the per-shot NLL.
+
+\begin{itemize}
+  \item \code{use\_analytic=False}: \code{neg\_logL} alone, no
+    \code{jac=True} --- scipy finite-differences the \emph{outer} objective
+    too (on top of the FD inner solves via \code{profile\_shot}).
+  \item \code{use\_analytic=True} (default): \code{neg\_logL\_and\_grad\_analytic},
+    which additionally accumulates the outer gradient via the envelope
+    theorem (\S\ref{sec:envelope}):
+    \begin{equation}
+      \frac{\partial(-\log\Lcal)}{\partial A_s}
+      = \sum_i \frac{\partial \mathrm{NLL}_{i,100}}{\partial\,\delta\phi_i}
+        \sin(2\pi f t_i),
+      \qquad
+      \frac{\partial(-\log\Lcal)}{\partial A_c}
+      = \sum_i \frac{\partial \mathrm{NLL}_{i,100}}{\partial\,\delta\phi_i}
+        \cos(2\pi f t_i),
+    \end{equation}
+    supplied via \code{jac=True}. The outer objective/gradient are
+    additionally rescaled by a constant \code{obj\_scale}, chosen once
+    (from the raw gradient norm at $\beta=0$) so that L-BFGS-B's first
+    step is $O(0.02)$ in $\beta$-space rather than overshooting by orders
+    of magnitude (same rationale as the inner rescaling, applied at the
+    outer level too).
+\end{itemize}
+
+\subsection{\code{fit\_beta\_batch} --- Batched/GPU Inner Solve}
+\label{sec:outer_batch}
+
+Instead of a Python loop, all $N$ shots' $x_i$ are stacked into one
+$(17N,)$ vector and solved with a \emph{single} L-BFGS-B call per outer
+$\beta$ evaluation (\code{batched\_nll\_grad}, using
+\code{pixel\_acs\_grad\_batch.pixel\_acs\_and\_grad\_batch},
+\S\ref{sec:batching}), amortising GPU kernel-launch overhead across shots.
+
+Critically, \code{fit\_beta\_batch}'s outer \code{minimize} call
+\begin{center}
+  \code{minimize(neg\_logL, b0, method='L-BFGS-B', bounds=bounds,
+  options=\{'maxiter': outer\_maxiter\})}
+\end{center}
+had \textbf{no \code{jac=True} and no objective rescaling}: unlike
+\code{fit\_beta}, there was no envelope-theorem outer gradient and no
+\code{obj\_scale} analogue, so scipy finite-differenced the \emph{outer}
+objective itself, with each FD probe triggering a fresh, warm-started,
+only-\code{n\_inner\_iter}-step inner batched solve. \textbf{This has since
+been fixed} (\S\ref{sec:issues}): \code{batched\_nll\_grad} now also
+returns the per-shot $\partial\mathrm{NLL}_{100}/\partial\phi$ needed for
+the envelope theorem, and \code{fit\_beta\_batch} mirrors
+\code{fit\_beta}'s analytic outer gradient, objective rescaling, and theta
+bounds. A second, structural problem remains unfixed --- see
+\S\ref{sec:issues}.
+
+%%============================================================
+\section{Batching (\code{pixel\_acs\_grad\_batch.py})}
+\label{sec:batching}
+%%============================================================
+
+"Batching" here means stacking the leading axis of every per-shot
+quantity so that the four \code{\_eval\_fast\_grad} calls (one per grid
+dimension's derivative gather, \S\ref{sec:psmap}) and the finite-difference
+$\theta$-Jacobian loop are each issued \emph{once} across all $N$ shots
+simultaneously, rather than once per shot in a Python loop.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Quantity & Single-shot (\code{pixel\_acs\_grad.py}) & Batched (\code{pixel\_acs\_grad\_batch.py}) \\
+\midrule
+$\theta$ & $(8,)$ & $(N,8)$ \\
+Sample points $x_0,y_0,v_{x_0},v_{y_0}$ & $(n_{\rm bins}n_v,)$ & $(N,\,n_{\rm bins}n_v)$ \\
+PSMAP lookup input (raveled) & $(n_{\rm bins}n_v,)$ & $(N\,n_{\rm bins}n_v,)$ --- one call \\
+Base ACS $(A_g,\ldots,C^s_e)$ & 6 $\times$ $(n_{\rm bins},)$ & 6 $\times$ $(N,n_{\rm bins})$ \\
+$\theta$-gradient & $(8,6,n_{\rm bins})$ & $(N,8,6,n_{\rm bins})$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The $\theta$-Jacobian's finite-difference loop (\code{for k in range(8)})
+still perturbs \emph{one component at a time}, but perturbs it for
+\emph{all $N$ shots simultaneously} in that iteration
+(\code{tp[:, k] += h\_theta[k]}, a scalar step broadcast across the shot
+axis) --- so it is still 8 sequential perturbation calls total, not
+$8N$, each itself a batched (all-shots) \code{\_sample\_points\_batch}
+call. The finish/port-sum/GH-average tail (\code{\_finish\_batch}) is
+likewise a straight axis-broadcast of the single-shot \code{\_finish}
+logic, with an explicit \code{(N, n\_bins, n\_v)} reshape inserted before
+the GH weight contraction.
+
+The module's own docstring flags this file as \emph{"the highest-risk part
+of the session's speedup work, validated step by step against the
+already-correct per-shot loop before trusting it"} --- no such validation
+script currently exists in the repo (as of this writing); see
+\S\ref{sec:issues}.
+
+%%============================================================
+\section{Assumptions and Simplifications}
+\label{sec:assumptions}
+%%============================================================
+
+\begin{itemize}
+  \item \textbf{$\phi_i$ is profiled, not marginalised.} Unlike
+    \code{map\_inference.py}/\code{full\_image\_is\_inference.py}, which
+    integrate out $\phi_i$ over a phase grid (Section~2.3 of
+    \code{notes/image\_likelihood.tex}) precisely to avoid the per-shot
+    phase absorbing the signal and biasing $\hat\beta$ toward zero, this
+    estimator point-estimates $\phi_i$ jointly with $\theta$. This is a
+    genuine modelling choice (not just cost-driven), and its effect on
+    $\hat\beta$'s bias/variance relative to the marginalised estimators has
+    not yet been characterised in this file or its notes --- flagged as an
+    open question, not an established equivalence.
+  \item \textbf{$L_{iz}$ (flux normalisation) is analytically profiled at
+    every evaluation}, not a free optimised parameter and not cached from
+    a separate pass (\S\ref{sec:likelihood}).
+  \item \textbf{Independent Gaussian priors} on $\theta_{i,0}$ and
+    $\theta_{i,100}$, matching the dataset's generation hyperparameters,
+    with \emph{no cross-AI covariance term}.
+  \item \textbf{Per-shot inner objective assumed effectively unimodal.}
+    There is no multi-start at the per-shot (inner) level, only at the
+    outer $\beta$ level; the warm-start scheme also implicitly assumes the
+    optimum moves continuously (and slowly, relative to
+    \code{n\_inner\_newton}/\code{n\_inner\_iter} steps) as $\beta$ is
+    perturbed by the optimiser or by finite differences.
+  \item \textbf{Bound constraints are numerical rails, not modelling
+    choices} (\S\ref{sec:inner}).
+  \item \textbf{Known inconsistencies in the source, noted for
+    reproducibility:}
+    \begin{itemize}
+      \item \code{fit\_beta}'s \code{gh\_order} parameter (and the
+        matching \code{--gh\_order} CLI flag) is accepted but
+        \textbf{never used} inside \code{fit\_beta} --- it is a
+        leftover from the port-summed API in \code{crb\_signal.py} and has
+        no effect on this script's behaviour.
+      \item \code{fit\_beta} defines a local \code{h\_theta = np.full(8,
+        1e-7)} that is \textbf{never passed anywhere} (dead code); the
+        finite-difference step actually used for the analytic $\theta$
+        gradient is the module-level constant
+        \code{\_H\_THETA\_ANALYTIC = np.full(8, 1e-9)} in
+        \code{pixel\_acs\_grad.py}. \code{fit\_beta\_batch} does define
+        and use its own $h_\theta=10^{-9}$ correctly.
+      \item \code{profile\_shot} (the plain finite-difference inner solve)
+        passes \textbf{no \code{bounds}} to \code{scipy.optimize.minimize}
+        (default: unconstrained), whereas \code{profile\_shot\_analytic}
+        always bounds $\theta$ and $\phi$ (\S\ref{sec:inner}). The two
+        inner-solve implementations are therefore not drop-in equivalent
+        even before considering gradient source.
+    \end{itemize}
+\end{itemize}
+
+%%============================================================
+\section{Known Open Issues / Current Investigation}
+\label{sec:issues}
+%%============================================================
+
+\code{fit\_beta\_batch} was reported to run faster than \code{fit\_beta}
+but converge to a different $\hat\beta$. Investigation resolved this into
+\textbf{two distinct issues}.
+
+\paragraph{Issue 1 --- fixed.} Direct numerical cross-validation of
+\code{pixel\_acs\_grad\_batch.py} against the per-shot loop
+(\code{pixel\_acs\_grad.py}), for several random shots and $\theta$ values,
+showed the batched value \emph{and} gradient are \textbf{byte-identical}
+(max abs.\ difference $=0.0$) to the single-shot reference --- the batched
+pixel-level math in \S\ref{sec:acs}--\ref{sec:psmap} is \textbf{not} the
+source of the discrepancy, despite the module docstring's own admission
+that this had never actually been checked. The real bug was exactly
+hypothesis (2) originally raised in this section:
+\code{fit\_beta\_batch}'s outer \code{minimize} call had no analytic
+gradient, so scipy's own finite-difference outer gradient was computed by
+perturbing $\beta$ and re-solving the warm-started (\code{state['x']}
+mutated in place) inner problem at each FD probe --- making repeated
+evaluations near the same $\beta$ history-dependent and corrupting the FD
+gradient estimate. This has been \textbf{fixed}: \code{batched\_nll\_grad}
+now additionally returns the per-shot $\partial\mathrm{NLL}_{100}/\partial\phi$,
+\code{fit\_beta\_batch} now assembles the same envelope-theorem outer
+gradient as \code{fit\_beta} (\S\ref{sec:outer}) and applies matching
+objective rescaling and $\theta$/$\phi$ bounds on its inner solve.
+
+\paragraph{Issue 2 --- found, \textbf{not} fixed; structural.} Even with
+Issue 1 fixed, forcing the inner batched solve to hard convergence (up to
+1000 iterations) on real data revealed that the single monolithic
+$(17N)$-dimensional L-BFGS-B call converges markedly \emph{worse} than $N$
+independent per-shot 9-dimensional solves: in a 4-shot test, one shot's
+$\phi$ got stuck in the wrong local optimum ($\phi\approx0.77$ vs.\ the
+loop's $\phi\approx0.00$) with a residual gradient norm ($\sim\!8\times10^7$)
+that did not shrink with further iterations. This is not a convergence
+\emph{tolerance} problem (more \code{n\_inner\_iter} does not fix it): it is
+that bundling all shots into one L-BFGS-B call shares curvature/step-size
+history across shots whose $\phi$-landscapes are independently
+multi-modal, so one "hard" shot can stall the whole batch. This defeats
+the purpose of the arrow-sparsity argument in \S\ref{sec:arrow}, which
+licenses solving the shots \emph{independently} given $\beta$ --- the
+batched implementation currently does not exploit that independence at
+the optimizer level, only at the value/gradient-evaluation level. A
+correct fix (hand-vectorised per-shot quasi-Newton steps, sharing only the
+batched GPU value/gradient call but keeping independent per-shot optimiser
+state) is a larger rewrite, out of scope for the fix applied so far.
+
+\paragraph{Bottom line.} The Fisher-theoretic motivation in \S1 (pixel
+likelihood retains $\sim\!96\%$ vs.\ $\sim\!9\%$ of the phase information)
+is a property of the \emph{model}, independent of either bug above.
+\code{fit\_beta} (the per-shot loop), given adequate inner/outer iteration
+budgets (\S\ref{sec:reproducibility}), is validated and should be trusted
+as the realisation of that gain. \code{fit\_beta\_batch}, even after
+Issue 1's fix, should \textbf{not yet} be treated as a faster drop-in
+replacement until Issue 2 is addressed --- it can converge to the wrong
+local optimum for shots with a hard $\phi$ landscape, silently.
+
+%%============================================================
+\section{Reproducibility}
+\label{sec:reproducibility}
+%%============================================================
+
+\subsection{CLI (\code{fit\_beta} only)}
+
+The \code{\_\_main\_\_} block only exercises \code{fit\_beta}; there is
+\textbf{no CLI flag to invoke \code{fit\_beta\_batch}} --- it must be
+called directly from Python (as done by the ad hoc scripts used in the
+investigation of \S\ref{sec:issues}).
+
+\begin{verbatim}
+python python-scripts/joint_profile_inference.py \
+    --data_root <path/to/dataset/root> \
+    --n_shots 5 --bins 16 --pixel_n_gh 4 --f_signal 0.3 \
+    --n_inner_newton 3 --n_starts 1 --outer_maxiter 15 --use_analytic 1
+\end{verbatim}
+
+\code{data\_root} must contain at least one \code{run\_*} directory with
+\code{Z0/data\_IMG.h5} and \code{Z100/data\_IMG.h5} (the standard
+\code{ImageShotDataset} layout used throughout the repo); the script uses
+\texttt{sorted(data\_root.glob('run\_*'))[0]}, i.e.\ always the
+first run. The hardcoded prior in \code{\_\_main\_\_} is
+$\bar\theta=(0,0,0,0,100,100,100,100)\,\mu$m(/s),
+$\sigma_\theta=10\,\mu$m(/s) for all 8 components --- override by calling
+\code{fit\_beta}/\code{fit\_beta\_batch} directly if the dataset's true
+generation hyperparameters differ.
+
+\subsection{Default Hyperparameters}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Parameter & CLI flag & Default \\
+\midrule
+Shots used & \code{--n\_shots} & 5 \\
+Inference bins per side & \code{--bins} & 16 \\
+GH order per velocity dim & \code{--pixel\_n\_gh} & 4 ($n_v=16$) \\
+Signal frequency $f$ & \code{--f\_signal} & 0.3 \\
+Inner solve iterations & \code{--n\_inner\_newton} & 3 \\
+Outer multi-starts & \code{--n\_starts} & 1 \\
+Outer L-BFGS-B iterations & \code{--outer\_maxiter} & 15 \\
+Analytic gradient & \code{--use\_analytic} & 1 (True) \\
+Outer bound (\code{grid\_half}) & --- (not exposed via CLI) & 0.2 rad \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Note the very small default inner-iteration budgets
+(\code{n\_inner\_newton=3}, or \code{n\_inner\_iter=15} for the batched
+path): given the $O(10^7)$ NLL scale and rescaling discussed in
+\S\ref{sec:inner}, these defaults may not be sufficient for the inner solve
+to actually satisfy the convergence check of \S\ref{sec:envelope} at every
+shot/outer-iteration, in which case the envelope-theorem outer gradient
+(\S\ref{sec:outer}) is not reliable regardless of which outer
+implementation is used --- always check for the
+\emph{"inner solve NOT converged"} warning when reproducing results from
+this script, and increase the inner iteration budget if it fires.
+
+\subsection{Output}
+
+Currently the script only prints $\hat\beta$ to stdout
+(\code{print(f'\textbackslash nFinal beta\_hat (As, Ac) = \{beta\_hat\}...')});
+there is no structured (JSONL/pickle) output file, unlike
+\code{map\_inference.py} and \code{profile\_cloud\_nuisances.py}. Anyone
+running this at scale (multiple runs/shots for a distribution, as in
+\code{notebooks/map\_mle\_distributions.ipynb}'s treatment of the other
+estimators) will need to add that themselves.
+
+\end{document}
