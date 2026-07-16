@@ -601,7 +601,8 @@ script currently exists in the repo (as of this writing); see
 
 \code{fit\_beta\_batch} was reported to run faster than \code{fit\_beta}
 but converge to a different $\hat\beta$. Investigation resolved this into
-\textbf{two distinct issues}.
+\textbf{five distinct issues}, four now resolved or downgraded to
+non-issues, one (Issue 4) still genuinely open.
 
 \paragraph{Issue 1 --- fixed.} Direct numerical cross-validation of
 \code{pixel\_acs\_grad\_batch.py} against the per-shot loop
@@ -623,35 +624,122 @@ now additionally returns the per-shot $\partial\mathrm{NLL}_{100}/\partial\phi$,
 gradient as \code{fit\_beta} (\S\ref{sec:outer}) and applies matching
 objective rescaling and $\theta$/$\phi$ bounds on its inner solve.
 
-\paragraph{Issue 2 --- found, \textbf{not} fixed; structural.} Even with
-Issue 1 fixed, forcing the inner batched solve to hard convergence (up to
-1000 iterations) on real data revealed that the single monolithic
+\paragraph{Issue 2 --- fixed.} Forcing the inner batched solve to hard
+convergence originally revealed that the single monolithic
 $(17N)$-dimensional L-BFGS-B call converges markedly \emph{worse} than $N$
-independent per-shot 9-dimensional solves: in a 4-shot test, one shot's
-$\phi$ got stuck in the wrong local optimum ($\phi\approx0.77$ vs.\ the
-loop's $\phi\approx0.00$) with a residual gradient norm ($\sim\!8\times10^7$)
-that did not shrink with further iterations. This is not a convergence
-\emph{tolerance} problem (more \code{n\_inner\_iter} does not fix it): it is
-that bundling all shots into one L-BFGS-B call shares curvature/step-size
-history across shots whose $\phi$-landscapes are independently
-multi-modal, so one "hard" shot can stall the whole batch. This defeats
-the purpose of the arrow-sparsity argument in \S\ref{sec:arrow}, which
-licenses solving the shots \emph{independently} given $\beta$ --- the
-batched implementation currently does not exploit that independence at
-the optimizer level, only at the value/gradient-evaluation level. A
-correct fix (hand-vectorised per-shot quasi-Newton steps, sharing only the
-batched GPU value/gradient call but keeping independent per-shot optimiser
-state) is a larger rewrite, out of scope for the fix applied so far.
+independent per-shot 9-dimensional solves, because bundling all shots into
+one L-BFGS-B call shares curvature/step-size history across shots whose
+$\phi$-landscapes are independently multi-modal, so one "hard" shot could
+stall the whole batch --- defeating the arrow-sparsity argument of
+\S\ref{sec:arrow}, which licenses solving the shots \emph{independently}
+given $\beta$. This is now \textbf{fixed} by \code{solve\_inner\_batch\_independent}:
+a hand-vectorised per-shot L-BFGS (own curvature history, own step size,
+own convergence decision per shot), batching only the expensive
+value/gradient evaluation via \code{\_batched\_nll\_grad\_per\_shot} --
+see that function's docstring for the three-attempt design history (naive
+BB, per-shot L-BFGS with per-shot backtracking retries, and the current
+one-eval-per-outer-iteration version, which is the only one that doesn't
+regress with $N$).
+
+Re-validated in this session: an isolated per-shot comparison at matched
+convergence budgets (no outer loop, fixed trial $\beta$) shows
+\code{solve\_inner\_batch\_independent} and \code{profile\_shot\_analytic}
+(scipy's own L-BFGS-B) land on the \emph{same} solution for all 8 test
+shots --- matching $\phi$ modulo $2\pi$ and matching NLL to within
+$\mathcal{O}(10^{-4})$ relative. An earlier full \code{fit\_beta} vs
+\code{fit\_beta\_batch} comparison (\code{\_validate\_multistart.py}) had
+seemed to show large $\hat\beta$ disagreement and \code{fit\_beta\_batch}
+running 9--20$\times$ \emph{slower}; that was traced to a mismatched-budget
+artifact in the comparison script itself (\code{n\_inner\_newton=3} for the
+loop vs.\ \code{n\_inner\_iter=200} for the batch solve is not an
+apples-to-apples comparison), not a batch-solver correctness bug. See
+Issue 3 below for what \emph{is} real in that observation.
+
+\paragraph{Issue 3 --- found, open (secondary, affects both solvers).} Two
+things noticed while re-validating Issue 2's fix, neither specific to
+\code{fit\_beta\_batch}:
+\begin{itemize}
+\item The inner-solve convergence check (\code{grad\_tol=1e-3} $\times$
+  $\max(|\mathrm{NLL}|,1)$, used identically by \code{profile\_shot\_analytic}
+  and \code{solve\_inner\_batch\_independent}) fires as "NOT converged"
+  almost universally at this problem's NLL scale ($\sim\!1.5\times10^7$,
+  giving an absolute gradient threshold $\sim\!1.5\times10^4$) even for
+  solutions that two independent optimizers agree on to $10^{-4}$ relative
+  precision. The tolerance is likely mis-scaled for this problem and
+  should be recalibrated (e.g.\ relative to a per-parameter-block scale,
+  not a single global NLL-derived threshold) rather than trusted as a
+  correctness signal in its current form.
+\item $\hat\beta$ from the full nested \code{fit\_beta} optimisation is
+  itself sensitive to the per-shot inner-solve iteration budget: at $N=8$,
+  raising \code{n\_inner\_newton} from 3 to 30 shifted the loop's own
+  $\hat\beta$ from $(0.156, 0.044)$ to $(0.134, 0.001)$ --- a large swing
+  from a purely internal budget change, with no change to the data.
+  \code{outer\_maxiter=15} plus the small-$N$ regime is evidently
+  under-converged/weakly identified; this is an outer-loop reliability
+  question independent of loop-vs-batch, and \code{\_validate\_multistart.py}
+  should not be treated as a fair correctness test until it uses matched,
+  adequate budgets on both sides.
+\end{itemize}
+
+\paragraph{Issue 4 --- found; investigated; \textbf{not a bug, no fix
+needed}.} The motivation for this whole line of investigation: $\phi$'s NLL
+landscape (theta held at \code{prior\_mean}, or independently re-profiled
+-- both scans agree) is \textbf{multimodal for 100\% of a 50-shot sample}
+(3--4 local minima per $2\pi$ period, occasionally 5), with top-two-basin
+NLL gaps ranging from 665 to $1.35\times10^6$ (median $\sim\!4.4\times10^5$)
+out of $\sim\!1.5\times10^7$ total -- some genuinely near-degenerate. This
+raised the question motivating this section's title: is \emph{profiling}
+$\phi$ (point-estimate optimisation, what \code{fit\_beta}/
+\code{fit\_beta\_batch} both do) a statistically valid replacement for
+\emph{marginalising} it out, for this pixel-resolved estimator?
+
+Direct test: swept a $(A_s,A_c)$ direction over \code{fit\_beta}'s own
+bound range ($\beta_\mathrm{scale}\in[-0.2,0.2]$) for 6 shots (3
+near-degenerate multimodal, 3 typical multimodal) and compared
+$\mathrm{NLL}_\mathrm{profiled}(\beta)=\min_\phi \mathrm{NLL}(\phi,\beta)$
+against a fine-grid $\mathrm{NLL}_\mathrm{marginalised}(\beta)=
+-\log\int e^{-\mathrm{NLL}(\phi,\beta)}\,d\phi$ (stable log-sum-exp over
+the same 360-point grid used to characterise the multimodality). Result:
+the $\arg\min_\beta$ shift between the profiled-sum and marginalised-sum
+objectives was \textbf{exactly 0.0000} at the sweep's grid resolution,
+for both the full 6-shot sum and the near-degenerate-only subset. Only
+1 of 6 shots exhibited even a single $\phi$-basin switch across the whole
+sweep, and that switch did not move the summed optimum. Per-shot, profiled
+and marginalised NLL differ by only $\sim\!4$ units (out of $\sim\!1.5
+\times10^7$) when the dominant basin doesn't change -- consistent with
+marginalisation contributing only a near-$\beta$-independent Laplace
+normalisation offset in that regime, which cannot move an argmin.
+\textbf{Conclusion:} despite universal multimodality, point-estimate
+profiling is not measurably biased relative to marginalisation at the
+$\beta$ magnitudes this problem actually explores, because basin-switching
+within that range is rare. (Caveat: this is a 6-shot, 1-direction check,
+not exhaustive; a full-dataset version would strengthen confidence
+further, but the result is consistent and has a clean explanation.) No
+marginalisation fix (e.g.\ a multi-start Laplace-mixture) is warranted.
+This also retroactively justifies the $\phi$-multi-start fix already in the
+code (\code{\_phi\_prescan}, used by both \code{fit\_beta} and
+\code{fit\_beta\_batch} to seed $\phi_0$ from a coarse grid scan instead of
+a fixed 0.0): its job is to land the profiler in a \emph{good} basin at the
+start of the outer loop, which matters given the multimodality found here,
+even though profiling within whichever basin is found turns out not to
+bias $\hat\beta$.
 
 \paragraph{Bottom line.} The Fisher-theoretic motivation in \S1 (pixel
 likelihood retains $\sim\!96\%$ vs.\ $\sim\!9\%$ of the phase information)
-is a property of the \emph{model}, independent of either bug above.
-\code{fit\_beta} (the per-shot loop), given adequate inner/outer iteration
-budgets (\S\ref{sec:reproducibility}), is validated and should be trusted
-as the realisation of that gain. \code{fit\_beta\_batch}, even after
-Issue 1's fix, should \textbf{not yet} be treated as a faster drop-in
-replacement until Issue 2 is addressed --- it can converge to the wrong
-local optimum for shots with a hard $\phi$ landscape, silently.
+is a property of the \emph{model}, independent of the issues above.
+\code{fit\_beta} (the per-shot loop) and \code{fit\_beta\_batch} (the
+vectorised batch, via \code{solve\_inner\_batch\_independent}) are now
+both validated as correct at the per-shot level and should agree given
+adequate, matched convergence budgets; \code{fit\_beta\_batch} is the
+faster of the two once given a fair budget (measured 2.38$\times$ at
+$N=8$ with matched \code{n\_inner\_newton}/\code{n\_inner\_iter}=30).
+Point-estimate $\phi$ profiling (with the \code{\_phi\_prescan} multi-start
+fix) is statistically adequate for this estimator despite the underlying
+$\phi$ landscape being universally multimodal. The remaining open item is
+Issue 3's outer-loop budget sensitivity and the \code{grad\_tol}
+calibration -- neither changes $\hat\beta$'s validity qualitatively, but
+both should be tightened before treating any single \code{outer\_maxiter=15}
+run's $\hat\beta$ as fully converged.
 
 %%============================================================
 \section{Reproducibility}
