@@ -5,6 +5,7 @@
 \usepackage{booktabs}
 \usepackage{parskip}
 \usepackage{xcolor}
+\usepackage{graphicx}
 
 \geometry{margin=2.5cm}
 
@@ -32,6 +33,7 @@
 
 %%============================================================
 \section{Purpose and Relationship to Other Estimators}
+\label{sec:purpose}
 %%============================================================
 
 This note documents \code{joint\_profile\_inference.py}, an estimator of the
@@ -693,29 +695,108 @@ $\phi$ (point-estimate optimisation, what \code{fit\_beta}/
 \code{fit\_beta\_batch} both do) a statistically valid replacement for
 \emph{marginalising} it out, for this pixel-resolved estimator?
 
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fig_multimodality_summary.png}
+\caption{$\phi$ multimodality across a 40-shot representative sample
+(\code{diagnose\_phi\_multimodality.py}): mode count, top-two-basin NLL
+gap, and $\phi$-separation between the top two basins. 100\% of shots
+(15 with 3 modes, 25 with 4) are multimodal.}
+\label{fig:multimodality-summary}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fig_phi_landscapes.png}
+\caption{$\phi$ NLL landscape for 6 representative shots spanning the
+observed gap range (3 near-degenerate: gaps 665--31{,}622; 3 typical:
+gaps $2.5$--$13.5\times10^5$), with local minima marked (red=best,
+orange=2nd-best, gray=other) and, for two shots, the actual converged
+$\phi$ from 12 independent \code{profile\_shot\_analytic} runs started at
+evenly-spaced $\phi_0$ (the same solver \code{fit\_beta} uses). Shot 161
+converges to \textbf{6 distinct $\phi$ values} and shot 0 to \textbf{8
+distinct $\phi$ values} across 12 starts -- direct empirical confirmation
+that different optimizer starts genuinely land in different basins, not a
+theoretical artefact of the grid scan.}
+\label{fig:phi-landscapes}
+\end{figure}
+
 Direct test: swept a $(A_s,A_c)$ direction over \code{fit\_beta}'s own
-bound range ($\beta_\mathrm{scale}\in[-0.2,0.2]$) for 6 shots (3
-near-degenerate multimodal, 3 typical multimodal) and compared
-$\mathrm{NLL}_\mathrm{profiled}(\beta)=\min_\phi \mathrm{NLL}(\phi,\beta)$
-against a fine-grid $\mathrm{NLL}_\mathrm{marginalised}(\beta)=
--\log\int e^{-\mathrm{NLL}(\phi,\beta)}\,d\phi$ (stable log-sum-exp over
-the same 360-point grid used to characterise the multimodality). Result:
-the $\arg\min_\beta$ shift between the profiled-sum and marginalised-sum
-objectives was \textbf{exactly 0.0000} at the sweep's grid resolution,
-for both the full 6-shot sum and the near-degenerate-only subset. Only
-1 of 6 shots exhibited even a single $\phi$-basin switch across the whole
-sweep, and that switch did not move the summed optimum. Per-shot, profiled
-and marginalised NLL differ by only $\sim\!4$ units (out of $\sim\!1.5
-\times10^7$) when the dominant basin doesn't change -- consistent with
-marginalisation contributing only a near-$\beta$-independent Laplace
-normalisation offset in that regime, which cannot move an argmin.
+bound range ($\beta_\mathrm{scale}\in[-0.2,0.2]$) for the same 6 shots and
+compared $\mathrm{NLL}_\mathrm{profiled}(\beta)=\min_\phi
+\mathrm{NLL}(\phi,\beta)$ against a marginalised
+$\mathrm{NLL}_\mathrm{marginalised}(\beta)=-\log\int
+e^{-\mathrm{NLL}(\phi,\beta)}\,d\phi$.
+
+\textbf{A numerical subtlety was caught and fixed here.} The first attempt
+integrated $\int e^{-\mathrm{NLL}}\,d\phi$ by log-sum-exp over the same
+360-point grid used to \emph{locate} the basins (spacing $0.0175$\,rad,
+correctly resolving basin \emph{locations}, which are separated by
+0.07--2.3\,rad). But a direct per-basin curvature probe found the
+within-basin Laplace width to be $\sigma\approx0.0004$--$0.0012$\,rad
+across the 6 test shots -- \textbf{46--49$\times$ finer than the grid
+spacing}. Fig.~\ref{fig:laplace-blindspot} shows this directly: panel (a)
+is the familiar coarse multi-basin view; panel (b) zooms into the
+global-best basin at proper resolution, revealing a needle-sharp peak the
+coarse grid cannot resolve. The grid-based integral was therefore sampling
+near-arbitrary points on unresolved spikes, not correctly computing the
+integral -- so the first pass's ``argmin shift = 0'' result was not
+trustworthy \emph{as computed}, regardless of whether it happened to be
+numerically close to correct.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fig_laplace_blindspot.png}
+\caption{Shot 161: the coarse 360-point scan (a) correctly locates 4
+basins but cannot resolve their width. A locally-refined scan (b), fit
+with a quadratic, finds the true peak width $\sigma=0.00075$\,rad --
+$23\times$ finer than the coarse grid spacing for this shot (46--49$\times$
+across all 6 test shots). This is exactly what a Fisher/CRB local-curvature
+calculation done at insufficient resolution would miss.}
+\label{fig:laplace-blindspot}
+\end{figure}
+
+\textbf{Fix:} re-derived the marginalisation using the coarse grid only to
+\emph{locate} basins (valid), then an analytic per-basin Laplace-mixture
+sum using \emph{locally-refined} curvature at each basin (a small
+fine-resolution quadratic fit, not a global grid integral):
+$Z(\beta)=\sum_k e^{-(\mathrm{NLL}_k(\beta)-\mathrm{NLL}_{\min})}
+\sqrt{2\pi/\kappa_k}$,
+$\mathrm{NLL}_\mathrm{marginalised}=-\log Z+\mathrm{NLL}_{\min}$
+(\code{diagnose\_profile\_vs\_marginal\_v2.py}; this doubles as a first
+working prototype of a multi-start Laplace-mixture marginaliser).
+\textbf{Result, now numerically sound: the $\arg\min_\beta$ shift between
+profiled-sum and marginalised-sum is again exactly 0.0000}
+(Fig.~\ref{fig:profile-vs-marginal}), for both the full 6-shot sum and the
+near-degenerate-only subset -- matching the first pass's number, but this
+time for a solid, checkable reason rather than a coincidence of an invalid
+integral: the per-basin Laplace normalisation varies by at most
+$\sim\!3\times$ across basins (i.e.\ $\lesssim 1$ unit of log-likelihood),
+while the NLL gaps between basins and the beta-sweep-induced NLL changes
+are $10^3$--$10^6$ -- the correction is simply too small to move an argmin
+at this problem's information level, independent of how carefully it is
+computed.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fig_profile_vs_marginal.png}
+\caption{Summed profiled vs.\ marginalised NLL($\beta_\mathrm{scale}$)
+objective, corrected Laplace-mixture marginalisation
+(\code{profile\_vs\_marginal\_v2.npz}). The two curves are visually
+indistinguishable; argmin shift $=0.0000$ for both panels.}
+\label{fig:profile-vs-marginal}
+\end{figure}
+
 \textbf{Conclusion:} despite universal multimodality, point-estimate
 profiling is not measurably biased relative to marginalisation at the
-$\beta$ magnitudes this problem actually explores, because basin-switching
-within that range is rare. (Caveat: this is a 6-shot, 1-direction check,
-not exhaustive; a full-dataset version would strengthen confidence
-further, but the result is consistent and has a clean explanation.) No
-marginalisation fix (e.g.\ a multi-start Laplace-mixture) is warranted.
+$\beta$ magnitudes this problem actually explores. (Caveat, unchanged from
+before: this is a 6-shot, 1-direction check, not exhaustive -- a
+full-dataset version, and an actual RMSE/bias study against ground truth
+across many shots and many independent runs, would settle this more
+completely; see the Future Work discussion below.) No marginalisation fix
+is required to correct $\hat\beta$'s point estimate in this regime, though
+see the RMSE caveat below -- an estimator can be unbiased and still have
+higher variance than an alternative that handles the ambiguity properly.
 This also retroactively justifies the $\phi$-multi-start fix already in the
 code (\code{\_phi\_prescan}, used by both \code{fit\_beta} and
 \code{fit\_beta\_batch} to seed $\phi_0$ from a coarse grid scan instead of
@@ -723,6 +804,34 @@ a fixed 0.0): its job is to land the profiler in a \emph{good} basin at the
 start of the outer loop, which matters given the multimodality found here,
 even though profiling within whichever basin is found turns out not to
 bias $\hat\beta$.
+
+\paragraph{Issue 5 --- open; requires further empirical work to settle.}
+Multimodality being unbiased for $\hat\beta$'s point estimate does not mean
+profiling is the \emph{best} way to handle $\phi$: an estimator can be
+unbiased and still have higher RMSE than one that properly accounts for
+the ambiguity across independent noise realisations (rather than within
+one realisation's beta sweep, which is all Issue 4 tested). Separately,
+this multimodality raises a real question about the Fisher/CRB analysis
+motivating this whole pipeline (\S\ref{sec:purpose}, the $\sim\!96\%$ vs.\
+$\sim\!9\%$ phase-information claim): that calculation is a \emph{local}
+quantity (curvature of the log-likelihood at the true $\phi$), and remains
+a mathematically valid lower bound on any unbiased estimator's variance
+under the standard regularity conditions -- multimodality elsewhere in the
+landscape does not invalidate the bound itself. But the bound being valid
+is not the same as it being \emph{achieved}: periodic, multimodal phase
+estimation is the textbook setting for a \emph{threshold effect}
+(the same phenomenon behind the FM-demodulation threshold and
+cycle-slip/integer-ambiguity problems in phase-based ranging) -- across
+independent noise realisations, an estimator can occasionally lock onto
+the wrong basin entirely, contributing a rare but large error that a local
+curvature calculation at the true value cannot see or account for. Whether
+this actually degrades the achieved RMSE below the CRB's prediction, and
+whether it does so differently for the pixel-resolved vs.\ moment-based
+estimators (changing the $96\%$/$9\%$ comparison), is \textbf{not yet
+known} and should not be assumed either way -- it can only be settled by
+the empirical RMSE-vs-ground-truth study across many independent shot
+realisations described in the Future Work section, not by this section's
+single-realisation bias check.
 
 \paragraph{Bottom line.} The Fisher-theoretic motivation in \S1 (pixel
 likelihood retains $\sim\!96\%$ vs.\ $\sim\!9\%$ of the phase information)
@@ -734,12 +843,37 @@ adequate, matched convergence budgets; \code{fit\_beta\_batch} is the
 faster of the two once given a fair budget (measured 2.38$\times$ at
 $N=8$ with matched \code{n\_inner\_newton}/\code{n\_inner\_iter}=30).
 Point-estimate $\phi$ profiling (with the \code{\_phi\_prescan} multi-start
-fix) is statistically adequate for this estimator despite the underlying
-$\phi$ landscape being universally multimodal. The remaining open item is
-Issue 3's outer-loop budget sensitivity and the \code{grad\_tol}
-calibration -- neither changes $\hat\beta$'s validity qualitatively, but
-both should be tightened before treating any single \code{outer\_maxiter=15}
-run's $\hat\beta$ as fully converged.
+fix) produces an unbiased $\hat\beta$ point estimate for this estimator
+despite the underlying $\phi$ landscape being universally multimodal
+(Issue 4) -- but whether it is the \emph{lowest-RMSE} way to handle that
+multimodality, and whether the Fisher/CRB comparison motivating this
+pipeline is actually achieved in practice, remain open (Issue 5). The
+other remaining open item is Issue 3's outer-loop budget sensitivity and
+the \code{grad\_tol} calibration -- neither changes $\hat\beta$'s validity
+qualitatively, but both should be tightened before treating any single
+\code{outer\_maxiter=15} run's $\hat\beta$ as fully converged.
+
+\paragraph{Future work.} The practical goal motivating this whole
+investigation is a working full-image-likelihood MLE for $\beta$ that is
+demonstrably reliable, not just unbiased in one diagnostic. Planned next
+steps: (1) characterise candidate methods for handling $\phi$ --
+full fine-grid marginalisation with an explicit, demonstrated
+quadrature-convergence check (vary the number of quadrature points until
+the integral stops changing, rather than assuming a resolution is
+sufficient -- Issue 4's own numerical correction is a cautionary example of
+why this must be checked, not asserted), the multi-start Laplace-mixture
+marginaliser prototyped above, and QMC/importance-sampling (an earlier
+attempt at a related IS/QMC marginalisation,
+\code{full\_image\_is\_inference.py}, is reported not to have worked --
+root-causing that failure is a prerequisite before reusing its design for
+$\phi$); (2) if any method's assumptions don't hold up empirically, fall
+back to brute-force quadrature with adaptive/non-uniform sampling or MC
+rather than a fixed uniform grid; (3) for every candidate method, measure
+empirical bias and RMSE of $\hat\beta$ against the actual 40-run and
+80-run ground-truth ensembles ($10^6$- and $10^8$-atom datasets), not a
+single-run diagnostic, and verify each method's assumptions empirically
+rather than asserting them; (4) only then revisit whether the Fisher/CRB
+comparison in \S\ref{sec:purpose} is actually achieved.
 
 %%============================================================
 \section{Reproducibility}
