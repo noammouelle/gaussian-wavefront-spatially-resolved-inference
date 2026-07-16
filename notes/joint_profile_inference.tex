@@ -833,6 +833,44 @@ the empirical RMSE-vs-ground-truth study across many independent shot
 realisations described in the Future Work section, not by this section's
 single-realisation bias check.
 
+\paragraph{Truth-overlay spot check (single realisations, $n=6$).} The
+simulation stores ground truth per shot (\code{phi0}, \code{delta\_phi} in
+the H5 files). Re-evaluated the 6 test shots' landscapes at each shot's
+\emph{actual} true \code{delta\_phi} (not the \code{delta\_phi\_trial}=0
+placeholder used for the multimodality characterisation above) and
+overlaid true $\phi_0$ (Fig.~\ref{fig:phi-truth-overlay}). Result: truth
+falls in the global-best basin for \textbf{6/6} shots -- a reassuring
+sign for these particular realisations, though $n=6$ single-realisation
+spot checks cannot establish the achieved RMSE the way Issue 5 requires.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fig_phi_truth_overlay.png}
+\caption{$\phi$ landscape at each shot's true \code{delta\_phi}, true
+$\phi_0$ overlaid (green line). Truth coincides with the global-best
+basin (red) in all 6 cases.}
+\label{fig:phi-truth-overlay}
+\end{figure}
+
+\textbf{A methodological correction surfaced by this check.} The
+top-two-basin gaps at each shot's true \code{delta\_phi} (965k--1.09M) are
+3+ orders of magnitude \emph{larger} than the gaps reported earlier for
+these same shots at \code{delta\_phi\_trial}=0 (665--31{,}622). A
+near-degenerate gap is, by construction, a fine-tuned near-coincidence
+between two basins' depths -- so it is expected to be fragile to
+perturbation, but this means the specific ``near-degenerate'' shot
+selection used for the Issue 4 bias test was identified relative to an
+\emph{arbitrary common reference point} (\code{delta\_phi\_trial}=0), not
+each shot's actual configuration. This does not affect Issue 4's
+conclusion (that test swept \code{delta\_phi\_trial} through a genuine
+range unrelated to any fixed reference point, and found no bias), but it
+does mean the population of genuinely near-degenerate shots \emph{at their
+own true delta\_phi} has not yet been identified or characterised. Finding
+that population (re-running the multimodality gap search using each
+shot's own true \code{delta\_phi} rather than a shared \code{0.0}) is a
+prerequisite for selecting a properly adversarial test set for the planned
+RMSE study, and is added to Future Work.
+
 \paragraph{Bottom line.} The Fisher-theoretic motivation in \S1 (pixel
 likelihood retains $\sim\!96\%$ vs.\ $\sim\!9\%$ of the phase information)
 is a property of the \emph{model}, independent of the issues above.
@@ -856,24 +894,63 @@ qualitatively, but both should be tightened before treating any single
 \paragraph{Future work.} The practical goal motivating this whole
 investigation is a working full-image-likelihood MLE for $\beta$ that is
 demonstrably reliable, not just unbiased in one diagnostic. Planned next
-steps: (1) characterise candidate methods for handling $\phi$ --
-full fine-grid marginalisation with an explicit, demonstrated
-quadrature-convergence check (vary the number of quadrature points until
-the integral stops changing, rather than assuming a resolution is
-sufficient -- Issue 4's own numerical correction is a cautionary example of
-why this must be checked, not asserted), the multi-start Laplace-mixture
-marginaliser prototyped above, and QMC/importance-sampling (an earlier
-attempt at a related IS/QMC marginalisation,
-\code{full\_image\_is\_inference.py}, is reported not to have worked --
-root-causing that failure is a prerequisite before reusing its design for
-$\phi$); (2) if any method's assumptions don't hold up empirically, fall
-back to brute-force quadrature with adaptive/non-uniform sampling or MC
-rather than a fixed uniform grid; (3) for every candidate method, measure
-empirical bias and RMSE of $\hat\beta$ against the actual 40-run and
-80-run ground-truth ensembles ($10^6$- and $10^8$-atom datasets), not a
-single-run diagnostic, and verify each method's assumptions empirically
-rather than asserting them; (4) only then revisit whether the Fisher/CRB
-comparison in \S\ref{sec:purpose} is actually achieved.
+steps:
+
+(0a) \textbf{Characterise $\theta$'s own landscape}, symmetric to what was
+done for $\phi$ (multistart optimisation in $\theta$ with $\phi$ fixed at
+its true/profiled value). A prior exploration
+(\code{python-scripts/multistart\_optimizer.py} + its companion notebook,
+multi-start L-BFGS-B over the 8D cloud prior for a single shot) found
+\emph{ridge} structure -- a continuous, weakly-identified direction --
+rather than discrete separated modes. This is a qualitatively different
+failure mode from $\phi$'s disconnected multimodality and has different
+implications: a ridge (near-zero Fisher eigenvalue along one direction)
+predicts a large but still continuous, unimodal variance, compatible with
+local Fisher/CRB validity in a way that discrete basin-switching is not --
+\emph{provided} the ridge is close to linear/quadratic near the truth at
+the relevant scale. Whether it is (vs.\ a curved/nonlinear ``banana''
+degeneracy, which would still break the local Gaussian approximation) has
+not been checked and should be, before trusting $\theta$'s MAP/profiled
+treatment any more than $\phi$'s was trusted before this investigation.
+
+(0b) \textbf{Re-identify near-degenerate shots at each shot's own true
+\code{delta\_phi}}, not a shared arbitrary reference point -- see the
+truth-overlay finding above, which found the earlier ``near-degenerate''
+labels were reference-point artifacts for these particular shots. The
+actual population of genuinely near-degenerate shots (if any) at real
+configurations is still unknown and is needed to build a properly
+adversarial test set.
+
+(1) Characterise candidate methods for handling $\phi$: full fine-grid
+marginalisation with an explicit, demonstrated quadrature-convergence
+check (vary the number of quadrature points until the integral stops
+changing, rather than assuming a resolution is sufficient -- Issue 4's own
+numerical correction is a cautionary example of why this must be checked,
+not asserted), the multi-start Laplace-mixture marginaliser prototyped
+above, and QMC/importance-sampling. An earlier attempt at a related
+IS/QMC marginalisation over $\theta$ (not $\phi$),
+\code{full\_image\_is\_inference.py}, is confirmed (2026-07-16) to have
+failed via \textbf{ESS collapse / importance-weight degeneracy} -- the
+proposal did not match the true posterior closely enough. $\phi$'s target
+is plausibly harder for a naive IS design (genuinely multimodal,
+needle-sharp basins) than $\theta$'s presumably-smoother-but-ridged
+posterior was, so any IS/QMC design for $\phi$ must be informed by the
+already-validated coarse-scan basin locations (sample within each detected
+basin's neighbourhood, not from one blind global proposal) rather than
+repeating the earlier design's mistake.
+
+(2) If any method's assumptions don't hold up empirically (e.g.\ the
+Laplace-mixture's per-basin Gaussian-shape assumption, not yet checked
+against a converged numerical integral), fall back to brute-force
+quadrature with adaptive/non-uniform sampling or MC rather than a fixed
+uniform grid; (3) for every candidate method, measure empirical bias and
+RMSE of $\hat\beta$ against the actual 40-run and 80-run ground-truth
+ensembles ($10^6$- and $10^8$-atom datasets), not a single-run diagnostic,
+using multistart everywhere so the comparison reflects genuine
+statistical properties rather than optimiser artefacts, and verify each
+method's assumptions empirically rather than asserting them; (4) only
+then revisit whether the Fisher/CRB comparison in \S\ref{sec:purpose} is
+actually achieved.
 
 %%============================================================
 \section{Reproducibility}
