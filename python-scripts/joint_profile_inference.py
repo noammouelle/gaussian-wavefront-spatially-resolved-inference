@@ -234,6 +234,85 @@ def _phi_prescan(acs_z0, acs_z100, n_g0, n_e0, n_g1, n_e1, prior_mean, prior_std
     return float(phi_grid[int(np.argmin(nlls))])
 
 
+def _phi_multistart_init_batch(acs_z0, acs_z100, n_g0, n_e0, n_g1, n_e1, prior_mean, prior_std,
+                                N, h_theta, theta_lo, theta_hi, n_grid=180, n_starts=4,
+                                n_iter=200, log=None):
+    """Genuine multistart replacement for _phi_prescan's single-best-grid-point
+    seed: locate the top-n_starts candidate phi basins per shot via a coarse
+    grid scan (theta=prior_mean, delta_phi_trial=0 -- the same reference point
+    _phi_prescan uses, valid here for the same reason: it's the outer loop's
+    own starting point), THEN run a full joint (phi,theta) solve
+    (solve_inner_batch_independent, GPU-batched) from EACH candidate,
+    keeping whichever converges to the lowest per-shot NLL -- not just the
+    argmin of the unrefined grid, which _phi_prescan's single-point version
+    implicitly trusted without verification. Runs solve_inner_batch_independent
+    n_starts times (batched across shots each time), NOT once per shot --
+    the expensive part stays GPU-batched throughout.
+
+    Used once, before the outer beta loop starts. Subsequent outer iterations
+    still warm-start from this verified state exactly as before.
+    """
+    phi_grid = np.linspace(-np.pi, np.pi, n_grid, endpoint=False)
+    theta_flat = np.tile(prior_mean, N)
+    zero_dphi = np.zeros(N)
+
+    nll_grid = np.empty((n_grid, N))
+    for gi, p in enumerate(phi_grid):
+        X = np.concatenate([np.full(N, p), theta_flat, theta_flat])
+        nll_ps, _, _, _, _ = _batched_nll_grad_per_shot(X, zero_dphi, acs_z0, acs_z100,
+                                                         n_g0, n_e0, n_g1, n_e1,
+                                                         prior_mean, prior_std, N, h_theta)
+        nll_grid[gi] = nll_ps
+    if log:
+        log(f'  phi multistart-init: grid scan done ({n_grid} pts x {N} shots)')
+
+    is_min = (nll_grid <= np.roll(nll_grid, 1, axis=0)) & (nll_grid <= np.roll(nll_grid, -1, axis=0))
+    starts_phi = np.empty((n_starts, N))
+    n_modes = np.empty(N, dtype=int)
+    for si in range(N):
+        idx = np.where(is_min[:, si])[0]
+        n_modes[si] = len(idx) if len(idx) > 0 else 1
+        if len(idx) == 0:
+            idx = np.array([int(np.argmin(nll_grid[:, si]))])
+        order = idx[np.argsort(nll_grid[idx, si])]   # ascending NLL = best first
+        top = order[:n_starts]
+        if len(top) < n_starts:
+            top = np.concatenate([top, np.repeat(top[-1], n_starts - len(top))])
+        starts_phi[:, si] = phi_grid[top]
+
+    def _unpack(Xflat):
+        phi = Xflat[:N]
+        tz0 = Xflat[N:N + 8*N].reshape(N, 8)
+        tz100 = Xflat[N + 8*N:N + 16*N].reshape(N, 8)
+        return np.concatenate([phi[:, None], tz0, tz100], axis=1)   # (N,17)
+
+    def _pack(Xmat):
+        return np.concatenate([Xmat[:, 0], Xmat[:, 1:9].ravel(), Xmat[:, 9:17].ravel()])
+
+    best_mat = None
+    best_nll = np.full(N, np.inf)
+    for k in range(n_starts):
+        x0 = np.concatenate([starts_phi[k], theta_flat, theta_flat])
+        x_k = solve_inner_batch_independent(x0, zero_dphi, acs_z0, acs_z100, n_g0, n_e0, n_g1, n_e1,
+                                             prior_mean, prior_std, N, h_theta, theta_lo, theta_hi,
+                                             n_iter=n_iter)
+        nll_k, _, _, _, _ = _batched_nll_grad_per_shot(x_k, zero_dphi, acs_z0, acs_z100,
+                                                        n_g0, n_e0, n_g1, n_e1,
+                                                        prior_mean, prior_std, N, h_theta)
+        mat_k = _unpack(x_k)
+        better = nll_k < best_nll
+        if best_mat is None:
+            best_mat = mat_k.copy()
+        else:
+            best_mat = np.where(better[:, None], mat_k, best_mat)
+        best_nll = np.where(better, nll_k, best_nll)
+        if log:
+            log(f'  phi multistart-init: candidate {k+1}/{n_starts} done, '
+                f'{int(better.sum())}/{N} shots improved')
+
+    return _pack(best_mat), n_modes
+
+
 # ── outer beta loop, warm-starting each shot's nuisance state ───────────────
 
 def fit_beta(run_dir, n_shots, f_signal, prior_mean, prior_std, bins=16, pixel_n_gh=4,
@@ -653,7 +732,8 @@ def solve_inner_batch_independent(x0, delta_phi_batch, acs_z0, acs_z100, n_g0, n
 
 
 def fit_beta_batch(run_dir, n_shots, f_signal, prior_mean, prior_std, bins=16, pixel_n_gh=4,
-                    n_inner_iter=15, grid_half=0.2, n_starts=1, outer_maxiter=15, log=print):
+                    n_inner_iter=15, grid_half=0.2, n_starts=1, outer_maxiter=15, log=print,
+                    phi_n_multistart=1, phi_multistart_grid=180, phi_multistart_iter=200):
     """Same model as fit_beta, but the inner per-shot solve is done as ONE
     batched (17*N)-dim optimisation instead of a Python loop over N separate
     small solves -- exploiting pixel_acs_grad_batch.
@@ -699,18 +779,31 @@ def fit_beta_batch(run_dir, n_shots, f_signal, prior_mean, prior_std, bins=16, p
         n_g1[i] = _downsample(img1[0].astype(np.float64), bins).ravel()
         n_e1[i] = _downsample(img1[1].astype(np.float64), bins).ravel()
 
-    # phi0 per shot from a coarse pre-scan instead of a fixed 0.0 -- see
-    # _phi_prescan and the module-level comment above it.
-    phi0 = np.array([_phi_prescan(acs_z0, acs_z100, n_g0[i], n_e0[i], n_g1[i], n_e1[i],
-                                   prior_mean, prior_std)
-                      for i in range(N)])
-    state = {'x': np.concatenate([phi0, np.tile(prior_mean, N), np.tile(prior_mean, N)])}
-
     # Same divergence guard as profile_shot_analytic: bound theta to a
     # generous multiple of the prior width, and phi to a wide-but-finite range.
     N_SIGMA = 20.0
     theta_lo = prior_mean - N_SIGMA * prior_std
     theta_hi = prior_mean + N_SIGMA * prior_std
+
+    if phi_n_multistart > 1:
+        # Genuine multistart: locate the top-K candidate phi basins per shot
+        # and verify which one actually wins after a full joint (phi,theta)
+        # solve, instead of trusting _phi_prescan's single unrefined grid
+        # argmin. See _phi_multistart_init_batch's docstring.
+        x_init, n_modes_init = _phi_multistart_init_batch(
+            acs_z0, acs_z100, n_g0, n_e0, n_g1, n_e1, prior_mean, prior_std,
+            N, h_theta, theta_lo, theta_hi, n_grid=phi_multistart_grid,
+            n_starts=phi_n_multistart, n_iter=phi_multistart_iter, log=log)
+        log(f'  phi multistart-init: n_modes per shot min={n_modes_init.min()} '
+            f'median={int(np.median(n_modes_init))} max={n_modes_init.max()}')
+        state = {'x': x_init}
+    else:
+        # phi0 per shot from a coarse pre-scan instead of a fixed 0.0 -- see
+        # _phi_prescan and the module-level comment above it.
+        phi0 = np.array([_phi_prescan(acs_z0, acs_z100, n_g0[i], n_e0[i], n_g1[i], n_e1[i],
+                                       prior_mean, prior_std)
+                          for i in range(N)])
+        state = {'x': np.concatenate([phi0, np.tile(prior_mean, N), np.tile(prior_mean, N)])}
 
     def _solve_inner(delta_phi_batch):
         # Fix for Issue 2 (notes/joint_profile_inference.tex, Known Open
