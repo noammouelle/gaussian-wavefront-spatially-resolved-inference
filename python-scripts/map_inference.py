@@ -305,18 +305,30 @@ def _gh_nodes_weights(n_order):
     return T, W
 
 
-def batch_acs_gh(eta_list, acs_obj, n_order):
+def batch_acs_gh(eta_list, acs_obj, n_order, chunk_shots=None):
     """
     Compute spatially-integrated ACS using a tensor-product Gauss-Hermite rule.
 
     Exact for polynomial integrands up to degree (2*n_order - 1) per dimension.
-    n_order=3 → 81 deterministic points; n_order=4 → 256.
+    n_order=3 → 81 deterministic points/shot; n_order=4 → 256; n_order=12 →
+    20,736 (4D tensor product over the cloud's full initial (x0,y0,vx0,vy0)
+    state -- this integrates the WHOLE cloud unconditionally, unlike the 2D
+    per-pixel conditional-velocity integral used elsewhere in this codebase,
+    because this is the port-summed/spatially-integrated ACS, not a per-pixel
+    one). At n_order=12 the (nP, 256, n_quad) Catmull-Rom gather tensor in
+    SurrogatePixelACS._eval_fast is too large for all 200 shots in one GPU
+    call (measured OOM at ~17GB for a single allocation, independent of
+    --bins). chunk_shots processes eta_list in smaller batches and
+    concatenates results -- purely a memory-management change, identical
+    numerics to an unchunked call.
 
     Parameters
     ----------
     eta_list : list of (10,) arrays
     acs_obj  : SurrogatePixelACS
     n_order  : int  GH points per dimension
+    chunk_shots : int or None  process at most this many shots per GPU call
+        (None = all at once, the original behaviour)
 
     Returns
     -------
@@ -324,6 +336,11 @@ def batch_acs_gh(eta_list, acs_obj, n_order):
     """
     if not USE_GPU:
         raise RuntimeError('GPU (cupy) required')
+    if chunk_shots is not None and len(eta_list) > chunk_shots:
+        chunks = [eta_list[i:i + chunk_shots] for i in range(0, len(eta_list), chunk_shots)]
+        return np.concatenate([batch_acs_gh(c, acs_obj, n_order, chunk_shots=None)
+                                for c in chunks], axis=0)
+
     T, W = _gh_nodes_weights(n_order)   # (n_gh, 4), (n_gh,)
     n_gh   = len(W)
     n_shots = len(eta_list)
@@ -439,18 +456,47 @@ def _combined_ll_batch(phi, acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1, dp
     return ll0 + ll1
 
 
+def _newton_polish(ll, phi0, n_newton, h):
+    """Vectorized damped-Newton polish from a given (n_shots,) starting phi."""
+    phi = phi0.copy()
+    for _ in range(n_newton):
+        f0, fp, fm = ll(phi), ll(phi + h), ll(phi - h)
+        grad = (fp - fm) / (2*h)
+        curv = -(fp - 2*f0 + fm) / h**2   # curvature of -ll (positive at a max of ll)
+        curv_safe = np.where(curv > 1e-8, curv, 1e-8)
+        step = np.clip(grad / curv_safe, -0.5, 0.5)
+        phi = phi + step
+    f0, fp, fm = ll(phi), ll(phi + h), ll(phi - h)
+    ll_star = f0
+    curv = -(fp - 2*f0 + fm) / h**2
+    curv = np.maximum(curv, 1e-8)
+    return phi, ll_star, curv
+
+
 def solve_phi_batch(acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1, dphi,
-                     n_scan=64, n_newton=12, h=1e-5):
+                     n_scan=64, n_newton=12, h=1e-5, n_multistart=1):
     """
-    Vectorized per-shot solve for the (single, dominant) combined-likelihood
-    optimum phi_i*, via a coarse scan (to seed the right basin) followed by
-    a few damped Newton polish steps on finite-difference derivatives.
+    Vectorized per-shot solve for the combined-likelihood optimum phi_i*.
+
+    Historically this assumed the combined z0+z100 likelihood is "effectively
+    unimodal" for this port-summed statistic (see module docstring) and used
+    only ONE Newton polish from the single best coarse-scan point. That
+    assumption was never verified here, and an analogous assumption was found
+    to be WRONG for the full-pixel likelihood (joint_profile_inference.py:
+    100% of a 50-shot sample is multimodal, 3-4 basins per shot). This is now
+    checked directly: with n_multistart > 1, Newton-polish the top-n_multistart
+    local maxima found by the coarse scan (not just the single best), and keep
+    whichever converges to the highest log-likelihood per shot -- i.e. genuine
+    multistart, not scan-then-polish-once. n_multistart=1 recovers the
+    original behaviour exactly (for backward compatibility / comparison).
 
     Returns
     -------
     phi_star   : (n_shots,)  argmax location
     ll_star    : (n_shots,)  log-likelihood at the optimum
     curv       : (n_shots,)  curvature of -log-likelihood at the optimum (>=0)
+    n_modes    : (n_shots,)  # of distinct local maxima found by the coarse scan
+                 (diagnostic only -- multimodality census for this statistic)
     """
     n_shots = acs_z0_arr.shape[0]
 
@@ -459,37 +505,52 @@ def solve_phi_batch(acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1, dphi,
                                    acs_z100_arr, n_g1, n_e1, dphi)
 
     scan = np.linspace(0.0, 2*np.pi, n_scan, endpoint=False)
-    best_ll  = np.full(n_shots, -np.inf)
-    best_phi = np.zeros(n_shots)
-    for p in scan:
-        cur = ll(np.full(n_shots, p))
-        better = cur > best_ll
-        best_ll  = np.where(better, cur, best_ll)
-        best_phi = np.where(better, p, best_phi)
+    scan_ll = np.stack([ll(np.full(n_shots, p)) for p in scan], axis=0)  # (n_scan, n_shots)
 
-    phi = best_phi
-    for _ in range(n_newton):
-        f0, fp, fm = ll(phi), ll(phi + h), ll(phi - h)
-        grad = (fp - fm) / (2*h)
-        curv = -(fp - 2*f0 + fm) / h**2   # curvature of -ll (positive at a max of ll)
-        curv_safe = np.where(curv > 1e-8, curv, 1e-8)
-        step = np.clip(grad / curv_safe, -0.5, 0.5)
-        phi = phi + step
+    if n_multistart <= 1:
+        best_idx = np.argmax(scan_ll, axis=0)
+        best_phi = scan[best_idx]
+        n_modes = np.ones(n_shots, dtype=int)  # not computed in single-start mode
+        return _newton_polish(ll, best_phi, n_newton, h) + (n_modes,)
 
-    f0, fp, fm = ll(phi), ll(phi + h), ll(phi - h)
-    ll_star = f0
-    curv    = -(fp - 2*f0 + fm) / h**2
-    curv    = np.maximum(curv, 1e-8)
-    return phi, ll_star, curv
+    # local maxima of the scan, per shot, periodic boundary (same logic as
+    # diagnose_phi_multimodality.py's local_minima_idx, sign-flipped for a
+    # log-likelihood maximum instead of an NLL minimum).
+    is_max = (scan_ll >= np.roll(scan_ll, 1, axis=0)) & (scan_ll >= np.roll(scan_ll, -1, axis=0))
+    n_modes = is_max.sum(axis=0)
+
+    starts = np.empty((n_multistart, n_shots))
+    for s in range(n_shots):
+        idx = np.where(is_max[:, s])[0]
+        if len(idx) == 0:
+            idx = np.array([int(np.argmax(scan_ll[:, s]))])
+        order = idx[np.argsort(-scan_ll[idx, s])]  # descending by ll
+        top = order[:n_multistart]
+        if len(top) < n_multistart:
+            top = np.concatenate([top, np.repeat(top[-1], n_multistart - len(top))])
+        starts[:, s] = scan[top]
+
+    best_phi = np.full(n_shots, np.nan)
+    best_ll = np.full(n_shots, -np.inf)
+    best_curv = np.full(n_shots, np.nan)
+    for k in range(n_multistart):
+        phi_k, ll_k, curv_k = _newton_polish(ll, starts[k], n_newton, h)
+        better = ll_k > best_ll
+        best_phi = np.where(better, phi_k, best_phi)
+        best_ll = np.where(better, ll_k, best_ll)
+        best_curv = np.where(better, curv_k, best_curv)
+
+    return best_phi, best_ll, best_curv, n_modes
 
 
 def total_logL_fast(beta, acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1,
                      f_signal, shot_idx_arr, phi_method='laplace',
-                     n_scan=64, n_newton=12):
+                     n_scan=64, n_newton=12, n_multistart=1):
     As, Ac = float(beta[0]), float(beta[1])
     dphi = As*np.sin(2*np.pi*f_signal*shot_idx_arr) + Ac*np.cos(2*np.pi*f_signal*shot_idx_arr)
-    _, ll_star, curv = solve_phi_batch(acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1,
-                                        dphi, n_scan=n_scan, n_newton=n_newton)
+    _, ll_star, curv, _ = solve_phi_batch(acs_z0_arr, n_g0, n_e0, acs_z100_arr, n_g1, n_e1,
+                                           dphi, n_scan=n_scan, n_newton=n_newton,
+                                           n_multistart=n_multistart)
     if phi_method == 'laplace':
         log_terms = ll_star + 0.5*np.log(2*np.pi) - 0.5*np.log(curv)
     elif phi_method == 'point':
@@ -561,7 +622,8 @@ def _run_one(data_dir, acs_z0, acs_z100, m_eta, K, A_m_eta, args, log):
     t0 = time.perf_counter()
     def _compute_acs(eta_list, acs_obj, seed):
         if args.quad == 'gh':
-            return batch_acs_gh(eta_list, acs_obj, args.gh_order)
+            return batch_acs_gh(eta_list, acs_obj, args.gh_order,
+                                 chunk_shots=getattr(args, 'gh_chunk_shots', None))
         else:
             return batch_acs(eta_list, acs_obj, args.n_qmc_int, rng_seed=seed)
 
@@ -614,12 +676,14 @@ def _run_one(data_dir, acs_z0, acs_z100, m_eta, K, A_m_eta, args, log):
         n_g1_arr = np.array([c[0] for c in counts_z100]); n_e1_arr = np.array([c[1] for c in counts_z100])
         n_scan   = getattr(args, 'phi_n_scan', 64)
         n_newton = getattr(args, 'phi_n_newton', 12)
+        n_multistart = getattr(args, 'phi_n_multistart', 1)
 
         def neg_logL(beta):
             return -total_logL_fast(beta, acs_z0_arr, n_g0_arr, n_e0_arr,
                                      acs_z100_arr, n_g1_arr, n_e1_arr,
                                      f_signal, shot_idx_arr, phi_method=phi_method,
-                                     n_scan=n_scan, n_newton=n_newton)
+                                     n_scan=n_scan, n_newton=n_newton,
+                                     n_multistart=n_multistart)
 
     t0 = time.perf_counter()
     ll_true = -neg_logL((As_true, Ac_true))
@@ -686,6 +750,10 @@ def main():
                    help='Cloud integration method: qmc (default) or gh (Gauss-Hermite)')
     p.add_argument('--gh_order',    type=int,   default=3,
                    help='GH points per dimension (gh mode only); n^4 total, default 3 → 81 pts')
+    p.add_argument('--gh_chunk_shots', type=int, default=None,
+                   help='process at most this many shots per batch_acs_gh GPU call '
+                        '(gh mode only; None = all shots at once, the original behaviour). '
+                        'Needed at high gh_order (e.g. 12 -> 20,736 pts/shot) to avoid GPU OOM.')
     p.add_argument('--n_theta',     type=int,   default=DEFAULT_N_THETA)
     p.add_argument('--phi_method',  type=str,   default='laplace',
                    choices=['grid', 'laplace', 'point'],
@@ -701,6 +769,11 @@ def main():
                    help='coarse scan points to seed the phi optimum (laplace/point only)')
     p.add_argument('--phi_n_newton', type=int, default=12,
                    help='Newton polish iterations for the phi optimum (laplace/point only)')
+    p.add_argument('--phi_n_multistart', type=int, default=1,
+                   help='genuine multistart for the phi solve: Newton-polish the top-N '
+                        'local maxima from the coarse scan and keep the best per shot, '
+                        'instead of polishing only the single best scan point '
+                        '(laplace/point only; 1 = original single-start behaviour)')
     p.add_argument('--t_det',       type=float, default=DEFAULT_T_DET)
     p.add_argument('--max_shots',   type=int,   default=DEFAULT_MAX_SHOTS)
     p.add_argument('--grid_n',      type=int,   default=DEFAULT_GRID_N)

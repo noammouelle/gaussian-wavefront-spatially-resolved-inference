@@ -1626,4 +1626,153 @@ initialisation (\texttt{--init-from-true}) on the default 1\,M-atom dataset
         evaluations for both the cloud profiling and the signal fit.
 \end{itemize}
 
+%%============================================================
+\section{\texttt{map\_inference.py}: $\phi$ Multistart and Empirical RMSE
+vs.\ CRB (2026-07-16)}
+\label{sec:map_inference_rmse}
+%%============================================================
+
+This section documents a direct empirical test of \texttt{map\_inference.py}
+(the plug-in-MAP, moment-based cloud estimator\footnote{See
+the module docstring: $\eta_i$ is a closed-form constrained-MAP estimate from
+observed final-image moments (Kalman update, $R=0$); this is \emph{not} an
+iterative nonlinear optimisation, so there is no local-minima risk for
+$\eta$ itself.}): does hardening $\phi$'s per-shot solve with genuine
+multistart change $\hat\beta$'s RMSE, and how does the achieved RMSE compare
+to the Cram\'er-Rao bound, across two atom counts and multiple $\eta$-handling
+strategies?
+
+\subsection{$\phi$ Multistart: No Measurable Effect}
+
+\texttt{solve\_phi\_batch} originally seeded its Newton polish from only the
+single best point of a coarse scan, relying on an unverified assumption
+(stated in its own docstring) that the port-summed combined likelihood is
+``effectively unimodal.'' This was hardened to genuine multistart: locate the
+top-$K$ local maxima of the coarse scan per shot, Newton-polish \emph{each},
+keep whichever converges highest (implemented via a new
+\texttt{phi\_n\_multistart} parameter; $\ge 2$ triggers the new behaviour,
+$=1$ recovers the original code path exactly).
+
+Tested across all 80 real independent runs of the $10^6$-atom dataset
+(\texttt{moments} mode, $N=200$ shots, \texttt{gh\_order=12},
+\texttt{phi\_method=point}): $\hat\beta$'s RMSE was \textbf{identical to 5
+decimal places} between \texttt{phi\_n\_multistart=1} and \texttt{=6}
+($\mathrm{RMSE}(A_s)=0.00019$, $\mathrm{RMSE}(A_c)=0.00017$ both ways;
+per-run $\hat\beta$ differences $\le 2\times10^{-6}$, nonzero for only 14/80
+runs). \textbf{Conclusion: for this port-summed statistic, the original
+single-scan-point assumption holds up empirically, unlike the
+pixel-resolved case} (\texttt{joint\_profile\_inference.py}, where $\phi$ is
+100\% multimodal across a 50-shot sample -- see
+\texttt{notes/joint\_profile\_inference.tex}, Issue 4). Multistart is kept
+available (cheap relative to the rest of the pipeline) but is not required
+for correctness here.
+
+\subsection{Three-Way $\eta$-Handling Comparison, $10^6$ Atoms, $N=200$ Shots}
+
+80 real independent runs, \texttt{phi\_method=point} (pure point-estimate
+profiling, no Laplace correction -- this isolates profiling's own accuracy
+from any marginalisation approximation), \texttt{quad=gh},
+\texttt{gh\_order=12} (chunked over shots, \texttt{gh\_chunk\_shots=30}, to
+fit GPU memory -- see \texttt{--gh\_chunk\_shots} in the CLI; unchunked
+$n\_order{=}12$ at 200 shots OOMs a 46\,GB GPU, since the tensor-product GH
+rule here is \emph{4D} -- over the cloud's full initial
+$(x_0,y_0,v_{x0},v_{y0})$ state, integrated unconditionally, as opposed to
+the \emph{2D} conditional-velocity integral (\texttt{pixel\_n\_gh} in
+\texttt{joint\_profile\_inference.py}) used for the per-pixel conditional
+likelihood elsewhere in this codebase -- the two are not directly comparable
+quadrature orders):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Mode & RMSE($A_s$) & RMSE($A_c$) & vs.\ moments \\
+\midrule
+\texttt{use\_moments=0} (prior-mean $\eta$, no position info) & 0.00051 & 0.00049 & 2.7$\times$ worse \\
+\texttt{use\_moments=1} (moment-based $\eta$, realistic) & 0.00019 & 0.00017 & --- \\
+\texttt{use\_true\_eta=1} (oracle $\eta$) & 0.00015 & 0.00015 & 20--25\% better \\
+\bottomrule
+\end{tabular}
+\caption{$\hat\beta$ RMSE across 80 independent $10^6$-atom runs, $N=200$
+shots. All three modes are essentially unbiased (bias $\le 8\times10^{-5}$).}
+\end{table}
+
+Interpretation: moment-based $\eta$ estimation captures \emph{most} of the
+available gain from spatial information -- the jump from no-info to moments
+is large (2.7$\times$), but moments to perfect oracle knowledge only buys a
+further $\sim$20--25\%.
+
+\textbf{A CRB-reference caveat.} The natural first comparison is against the
+port-summed CRB (\texttt{crb\_signal.py}, \texttt{likelihood=port}:
+$\sigma=(0.00022, 0.00021)$ at $N=200$) -- \texttt{use\_moments=1} beats
+this. But this is a \emph{mismatched} reference: the port CRB's Fisher
+information comes from the port-summed Poisson statistic's own dependence on
+$\eta$ (properly Schur-complementing $\eta$'s prior uncertainty), not from
+explicit position moments. \texttt{use\_moments=1} uses a strictly richer
+information channel (explicit $(\mu_{xf},\mu_{yf},V_{xf},V_{yf})$ moments)
+than the port CRB assumes, so beating it is expected, not a notable
+achievement in itself. The three-way comparison above (moments vs.\ no-info
+vs.\ oracle) is the more meaningful, apples-to-apples test.
+
+\subsection{Matched $10^6$ vs.\ $10^8$ Atom Comparison, $N=50$ Shots}
+
+The $10^8$-atom dataset only has runs available at $N=50$ shots/run (40
+independent runs), so a fair atom-count comparison requires truncating the
+$10^6$-atom dataset to the same $N=50$ (\texttt{--max\_shots 50}) rather than
+comparing its $N{=}200$ results directly -- CRB/RMSE scale with
+$1/\sqrt{N_\mathrm{shots}}$ independent of atom count, so mismatched $N$
+would confound the comparison.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Config & RMSE($A_s$) & RMSE($A_c$) & Port CRB & Oracle-$\theta$ CRB \\
+\midrule
+$10^6$, moments & 0.00049 & 0.00045 & (0.000434, 0.000477) & (0.000159, 0.000157) \\
+$10^6$, oracle-$\eta$ & 0.00034 & 0.00035 & --- & (0.000159, 0.000157) \\
+$10^8$, moments & 0.00029 & 0.00024 & (0.000287, 0.000425) & (0.0000160, 0.0000160) \\
+$10^8$, oracle-$\eta$ & 0.00003 & 0.00003 & --- & (0.0000160, 0.0000160) \\
+\bottomrule
+\end{tabular}
+\caption{Matched-$N{=}50$ comparison, port-summed statistic. Oracle-$\theta$
+CRB uses the theta-known Fisher block (\texttt{H\_pp\_no\_prior\_no\_theta}
+in \texttt{crb\_signal.py}'s per-shot diagnostics), the correct matched
+bound for \texttt{use\_true\_eta=1} (theta uncertainty eliminated, not just
+estimated well). Pixel-likelihood CRB at the same $N=50$, for reference:
+$10^6$: $\sigma=(0.000162,0.000160)$, oracle$=(0.000159,0.000156)$;
+$10^8$: $\sigma=(0.000018,0.000018)$, oracle$=(0.0000160,0.0000160)$ --
+pixel CRB sits very close to its own oracle at both atom counts (the full
+image already constrains $\theta$ almost as well as knowing it exactly),
+unlike the port statistic, whose CRB is far from its oracle -- consistent
+with the $\sim\!96\%$ vs.\ $\sim\!9\%$ phase-information comparison
+motivating this whole line of work (\S1).}
+\end{table}
+
+Two findings worth flagging plainly, neither yet explained:
+
+\begin{itemize}
+\item \textbf{The oracle-vs-oracle-CRB gap is consistent across a
+$100\times$ change in photon count}: $10^6$ oracle-$\eta$ RMSE is
+$2.2\times$ its matched CRB; $10^8$ oracle-$\eta$ RMSE is $1.9\times$ its
+matched CRB. This consistency across regimes with very different Poisson
+noise scales argues against a simple photon-counting or discretisation
+explanation and points toward something structural in the estimation
+pipeline -- \texttt{solve\_phi\_batch}'s convergence precision
+(\texttt{n\_scan}, \texttt{n\_newton}, finite-difference step $h$) and
+whether point-estimate profiling is unbiased-but-inefficient (as opposed to
+achieving the CRB) are both unverified candidate explanations, not
+established causes. \textbf{Not yet root-caused.}
+\item \textbf{Atom-count scaling is far weaker than naive photon-counting
+would predict}: $10^6\to10^8$ atoms (100$\times$ more photons/shot) only
+improves moments-mode RMSE by $\sim\!1.7\times$, not
+$\sqrt{100}=10\times$. This suggests the $\eta$ prior's own width -- not
+per-shot photon-counting precision -- is the effective floor for the
+moments-based estimator at these atom counts. (The oracle-$\eta$ estimator,
+by contrast, does show the expected $\sim\!10\times$ improvement:
+$0.00034\to0.00003$, $0.00035\to0.00003$ -- consistent with this being a
+property of the moment-based $\eta$ \emph{estimation} step specifically,
+not the underlying photon statistics.)
+\end{itemize}
+
 \end{document}
