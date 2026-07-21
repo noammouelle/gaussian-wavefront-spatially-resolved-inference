@@ -1022,4 +1022,266 @@ running this at scale (multiple runs/shots for a distribution, as in
 \code{notebooks/map\_mle\_distributions.ipynb}'s treatment of the other
 estimators) will need to add that themselves.
 
+%%============================================================
+\section{2026-07-20: The Inner/Outer Profiling Approach Fails at $10^8$
+Atoms, and a Successful Reframing}
+\label{sec:2026-07-20}
+
+This section documents a full investigation cycle: confirming that
+\code{fit\_beta\_batch}'s inner/outer profiling (\S\ref{sec:inner}--\S\ref{sec:outer})
+does not reliably converge at $10^8$ atoms even with a much larger budget
+than validated at $10^6$; diagnosing why; and a subsequent reframing of the
+whole problem (suggested by the user) that avoids the difficulty entirely
+and yields a genuine positive result. All numbers below are from real runs
+on the $10^8$-atom dataset (\code{R40\_N50\_A100000000\_...}) unless
+otherwise stated.
+
+\subsection{Convergence-budget sweep at $10^6$ vs.\ $10^8$ atoms}
+\label{sec:2026-07-20-budget}
+
+An earlier $N=20$-shot, 20-run RMSE-vs-CRB sweep at $10^6$ atoms
+(\code{n\_inner\_iter=30}, \code{outer\_maxiter=15}) gave $\hat\beta$ RMSE
+15--45$\times$ its CRB. Bumping the budget to \code{n\_inner\_iter=150},
+\code{outer\_maxiter=40} (5$\times$/2.7$\times$) brought this down to
+1.2--2.3$\times$ CRB across all 4 runs re-tested -- close, though the inner
+solve's own convergence check (\code{grad\_tol=1e-3} on the
+$|\text{grad}|/|\text{NLL}|$ ratio) never actually fired "converged" at any
+point in any of these runs; final ratios on completion ranged from
+$3.8\times10^{-3}$ to $0.38$.
+
+The \emph{same} validated budget, applied directly to $10^8$-atom data (per
+the user's explicit instruction to work on $10^8$ directly, since $10^6$
+was already close to its CRB via \code{map\_inference.py} and thus less
+informative about whether the extra pixel-level information helps): 2/2
+runs tested landed $\sim$590--680$\times$ their $10^8$ CRB
+($\sigma=(2.78,2.77)\times10^{-5}$ at $N=20$) -- \emph{miles} off, not the
+same order of magnitude. A follow-up isolated diagnostic (Gauss-Newton
+diagonal-curvature solver, see below) confirmed the underlying $\theta$
+optimisation genuinely struggles at $10^8$: even warm-started at the
+\emph{true} $\theta$, a $\theta$-only conditional solve wandered/plateaued
+around a grad ratio of 5--9 over 125+ iterations, never approaching
+tolerance.
+
+\subsection{Diagnosis: $\phi$ converges; $\theta$ does not; it's a real
+curvature effect, not a bug}
+\label{sec:2026-07-20-diagnosis}
+
+A targeted per-component check (splitting the aggregate "NOT converged"
+warning into its $\phi$ and $\theta$ pieces) showed, at both $10^6$ and
+$10^8$ atoms: \textbf{$\phi$ converges cleanly and fast} (final per-shot
+ratios $\sim10^{-6}$, deeply below tolerance, in well under 300 iterations
+even from a cold start) -- it is \textbf{$\theta$} that persistently fails
+the strict check (mildly at $10^6$, badly at $10^8$: worst-shot ratio
+$\sim$0.95, i.e.\ $\sim1000\times$ over tolerance). Since the
+envelope-theorem outer gradient (\S\ref{sec:envelope}) depends only on
+$\phi$, this suggested the outer gradient may have been reliable all along
+and the real problem is specifically optimising $\theta$.
+
+The float64-precision hypothesis (NLL $\sim10^9$--$10^{10}$ at $10^8$
+atoms causing catastrophic cancellation in the gradient) was checked and
+\textbf{ruled out}: the finite-difference step inside
+\code{pixel\_acs\_grad\_batch.py} is taken on the well-scaled intermediate
+spatial probability $P_b$ (O(1) scale), not directly on the huge NLL.
+Instead, the gradient at the \emph{true} $(\phi,\theta)$ point is
+genuinely huge ($|\nabla_\theta \mathrm{NLL}_{z0}|\sim8.7\times10^9$,
+exceeding the NLL itself, $\sim2.3\times10^9$) -- a real physical effect:
+the total-photon-count normalisation factor amplifies the chain rule at
+high flux, so the likelihood surface is legitimately far sharper at
+$10^8$ than $10^6$. A damped Gauss-Newton solver (using the natural
+Poisson/Fisher diagonal curvature, $H_{kk}=\sum_{\text{bins}}(\partial\mu/\partial\theta_k)^2/\mu$,
+as a preconditioner instead of L-BFGS's slowly-built approximation) was
+built and tested as a direct fix for this diagnosed sharp-curvature
+problem; it did not converge substantially faster (damping saturated at
+$10^{12}$, i.e.\ collapsed to a tiny-step gradient descent) -- ruling out
+"just use better local curvature" as a sufficient fix on its own.
+
+\subsection{The reframe: marginalise $\phi$ by quadrature (cheap, no
+optimiser), optimise $\theta$ outer against the smooth result}
+\label{sec:2026-07-20-reframe}
+
+The user's redirect: stop trying to fix the joint/conditional $\theta$
+optimisation, and stop batching over many shots with an outer $\beta$ loop
+at all. Ask a simpler, single-shot question first: \emph{how precisely can
+$\theta$ (8D kinematics) be determined from one shot's image, after
+marginalising $\phi$?} Since $\phi$ is 1D and periodic, it can be
+marginalised by a \emph{dense grid + direct quadrature} -- no optimiser
+involved, no convergence risk -- while $\theta$ (the actual parameter of
+interest, and the thing that was failing) is optimised \emph{outer}
+against the resulting marginal NLL surface:
+\[
+  \mathrm{NLL}(\theta) = -\log\!\int_0^{2\pi} p(\text{image}\mid\theta,\phi)\,d\phi
+  \approx -\log\!\sum_{m=1}^M \Delta\phi\, e^{-\mathrm{NLL}(\theta,\phi_m)}
+\]
+(via \code{scipy.special.logsumexp} for numerical stability), then
+\code{scipy.optimize.minimize(..., method='L-BFGS-B')} on $\theta$ against
+this smooth surface, with its own finite-difference gradients -- no custom
+optimiser code at all. This is the \emph{opposite} computational order
+from everything tried before (which fixed $\phi$ and optimised $\theta$
+\emph{conditionally} at every grid point -- the thing that kept failing to
+converge).
+
+The result was immediate: a single shot converges in \textbf{6 iterations,
+$\sim$7 seconds}, vs.\ hours of non-convergence with every prior approach.
+$\hat\theta_{\mathrm{MAP}}$ lands close to the shot's true $\theta$ (errors
+within $\sim$0.6 prior-$\sigma$ on a single-shot spot check).
+
+\paragraph{Caveat: the naive Hessian-based (Laplace) posterior $\sigma_\theta$
+is unreliable.} Taking the diagonal of the finite-difference Hessian at
+$\hat\theta_{\mathrm{MAP}}$ and converting to $\sigma=1/\sqrt{H_{kk}}$ gives
+values \textbf{66--220$\times$ tighter} than the true empirical scatter of
+$\hat\theta_{\mathrm{MAP}}$ across 50 independent shots (measured directly,
+not assumed). $\hat\theta_{\mathrm{MAP}}$ itself is trustworthy as a point
+estimate; a naive local-curvature confidence interval built on top of it is
+not -- consistent with this exact model's already-documented
+weakly-identified $\theta$ ridge directions (\S\ref{sec:issues}'s framing
+motivation), which a local quadratic approximation cannot capture.
+
+\subsection{Quadrature and hyperparameter convergence checks}
+\label{sec:2026-07-20-convergence}
+
+Per the standing rule that no quadrature resolution is trusted without an
+explicit convergence check: the $\phi$-grid density $M$ was varied from 500
+to 8000 on 3 shots -- $\hat\theta_{\mathrm{MAP}}$ is stable to
+$\sim10^{-9}$ absolute (theta's natural scale is $\sim10^{-5}$), fully
+converged already at $M=2000$ (the value used throughout). Separately,
+\code{pixel\_n\_gh} (the 2D Gauss--Hermite velocity-quadrature order inside
+\code{SemiAnalyticPixelACS}) was varied 4/8/16 with \textbf{no measurable
+effect} on the resulting RMSE -- already converged at the default. The
+pixel grid resolution \code{bins}, by contrast, is \textbf{not} fully
+converged even at 32 (1024 px) -- see below.
+
+\subsection{Headline result: $\theta$ recovery vs.\ \code{map\_inference.py}'s
+moment/Kalman-gain estimate}
+\label{sec:2026-07-20-headline}
+
+$N=50$ shots, $z{=}0$ slice, $10^8$ atoms, comparing $\hat\theta_{\mathrm{MAP}}$'s
+empirical RMSE against \code{true\_theta} to \code{map\_inference.py}'s
+existing moment-based (port-summed 4-moment $\to$ Kalman gain) $\hat\eta$,
+same shots, converted to the same 8-parameter representation:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Parameter group & Pixel-likelihood RMSE & Moment RMSE & Ratio \\
+\midrule
+Position ($\mu_{x0},\mu_{y0}$)        & $\sim9.6$--$9.7\times10^{-6}$ & $\sim9.6$--$9.7\times10^{-6}$ & $\sim1.0$ (tied) \\
+Velocity mean ($\mu_{vx0},\mu_{vy0}$) & $\sim2.5\times10^{-6}$        & $\sim2.5\times10^{-6}$        & $\sim1.01$--$1.02$ (slightly worse) \\
+Position spread ($\sigma_x,\sigma_y$) & $\sim9$--$10.5\times10^{-6}$  & $\sim9$--$10.6\times10^{-6}$  & $\sim0.99$ (slightly better) \\
+\textbf{Velocity spread ($\sigma_{vx},\sigma_{vy}$)} & $\mathbf{\sim0.66\text{--}0.87\times10^{-6}}$ & $\mathbf{\sim7.4\text{--}8.6\times10^{-6}}$ & $\mathbf{\sim0.08\text{--}0.12\ (8\text{--}12\times\text{ better})}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The velocity-spread improvement is physically sensible, not a fluke: the
+moment method only has access to the detection-plane position variance
+$V_{xf}=V_{x0}+2T\,C_{xv0}+T^2 V_{vx0}$ -- a single scalar mixing position
+spread, cross-correlation, and velocity spread together, so recovering
+$V_{vx0}$ specifically is a weak, prior-dependent inference. The full pixel
+likelihood instead uses the conditional-velocity structure baked into the
+fine-grained pixel pattern (via \code{SemiAnalyticPixelACS}'s 2D
+Gauss--Hermite conditional-velocity integral, \S\ref{sec:acs}), giving
+direct leverage on velocity spread that a 4-moment summary cannot access.
+
+\paragraph{Hyperparameter sweep (\code{bins}, \code{pixel\_n\_gh}), same
+50 shots.} \code{pixel\_n\_gh} confirmed converged (4/8/16 give
+statistically identical RMSE). \code{bins} is the only sensitive parameter,
+and \emph{only} for the velocity-spread ratio, which keeps improving with
+finer pixels without fully plateauing by the largest value tested:
+
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+\code{bins} (pixels) & RMSE($\sigma_{vx}$) ratio vs.\ moment & RMSE($\sigma_{vy}$) ratio & Cost \\
+\midrule
+8 (64 px)    & 0.284 & 0.336 & 5.9 s/shot \\
+16 (256 px)  & 0.101 & 0.116 & 7.9 s/shot \\
+32 (1024 px) & 0.083 & 0.089 & 34.3 s/shot \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Cost scales roughly quadratically with \code{bins}, as expected. All other
+parameter groups (position, velocity mean, position spread) are
+insensitive to \code{bins} in this range.
+
+\subsection{Does this propagate to a better $\hat\beta$?}
+\label{sec:2026-07-20-beta}
+
+$\hat\theta_{\mathrm{MAP}}$ (converted to $\hat\eta$ format,
+\code{theta\_to\_eta}) was plugged into \code{map\_inference.py}'s actual
+$\beta$-fitting pipeline (\code{batch\_acs\_gh}, \code{gh\_order=12},
+\code{chunk\_shots=20}, + \code{total\_logL\_fast} with
+\code{phi\_method='point'} + L-BFGS-B), and $\hat\beta$ RMSE compared across
+$N_{\mathrm{RUNS}}=10$ independent $10^8$-atom runs ($N=50$ shots/run,
+\code{run\_000}--\code{run\_009}) against the existing \code{moments}-mode
+and \code{oracle}-$\eta$-mode baselines computed on the \emph{identical}
+runs/shots (same code path, same $\eta$ format, differing only in how
+$\eta$ is estimated):
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+$\eta$ source & RMSE($A_s$) & RMSE($A_c$) \\
+\midrule
+\code{theta\_map\_eta} (this section's method) & $\mathbf{0.000106}$ & $\mathbf{0.000089}$ \\
+\code{moments} (existing baseline)             & $0.000255$          & $0.000171$          \\
+\code{oracle\_eta} (true $\eta$, ceiling)       & $0.000032$          & $0.000022$          \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The improved per-shot $\theta$ estimate \textbf{does propagate to a better
+$\hat\beta$}: RMSE improves by $\sim2.4\times$ on $A_s$ and $\sim1.9\times$
+on $A_c$ relative to the existing moment-based method, aggregated over all
+10 independent runs (not a single-run artifact -- individual runs were
+noisy and not all 10 individually favoured the new method, see
+\code{results/beta\_rmse\_with\_theta\_map\_eta.json} for the per-run
+breakdown, but the aggregate RMSE is unambiguous). It does not close the
+gap to the oracle-$\eta$ ceiling ($\sim3.3\times$/$4.0\times$ still
+remaining), consistent with $\theta_{\mathrm{MAP}}$'s own empirical error
+(\S\ref{sec:2026-07-20-headline}) still being well above zero -- this is a
+real, substantial, but partial improvement, not a full recovery of the
+information gap.
+
+Caveats on this specific run: \code{n\_starts=1} for the outer $\beta$
+optimisation (no multistart, unlike the $\times 8$ default used elsewhere
+in \code{map\_inference.py}) and \code{bins=16} for both the $\theta$-fit
+and the $\beta$-fit pixel evaluators (not the better-performing
+\code{bins=32} from \S\ref{sec:2026-07-20-headline}, which was not yet
+tested end-to-end through the $\beta$-fit due to its $\sim4\times$ higher
+per-shot cost) -- both are plausible sources of a still-larger-than-
+necessary gap to the oracle ceiling, not yet checked.
+
+\subsection{Open items}
+\label{sec:2026-07-20-open}
+
+\begin{itemize}
+\item The $z{=}100$ slice has not yet been run through this new method as
+  a standalone $\theta$-recovery check (only $z0$ was in
+  \S\ref{sec:2026-07-20-headline}'s table); it IS used as part of the
+  $\beta$-fit in \S\ref{sec:2026-07-20-beta}, but its own per-parameter
+  RMSE hasn't been reported separately.
+\item The $\beta$-fit RMSE comparison (\S\ref{sec:2026-07-20-beta}) used
+  \code{n\_starts=1} (no outer multistart) and \code{bins=16} (not the
+  better-performing \code{bins=32}); re-running with those matched to their
+  best-known settings could plausibly close more of the gap to the
+  oracle-$\eta$ ceiling.
+\item \code{bins} has not been pushed past 32; the velocity-spread ratio
+  was still improving there, so the ceiling of the achievable improvement
+  is not yet established, and cost scales steeply (quadratically).
+\item The Hessian/Laplace-based $\sigma_\theta$ is known-unreliable
+  (\S\ref{sec:2026-07-20-reframe}); if a trustworthy per-shot $\theta$
+  \emph{uncertainty} (not just point estimate) is ever needed, a method
+  that captures the ridge structure (e.g.\ profiling along the suspected
+  ridge direction, or relying on empirical multi-shot scatter rather than
+  a local curvature formula) would be required.
+\item The original inner/outer profiling machinery
+  (\S\ref{sec:inner}--\S\ref{sec:outer}) remains as documented above:
+  \textbf{confirmed not to reliably converge at $10^8$ atoms}, even with a
+  budget that worked well at $10^6$. This section's reframed approach
+  supersedes it for the $\theta$-recovery question; whether the original
+  machinery is still useful for anything (e.g.\ scenarios where $\theta$'s
+  curvature is milder) is not addressed here.
+\end{itemize}
+
 \end{document}
