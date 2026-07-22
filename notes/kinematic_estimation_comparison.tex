@@ -1,0 +1,529 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{graphicx}
+
+\geometry{margin=2.5cm}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Lcal}{\mathcal{L}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+
+\title{%
+  From Pixels to a Periodic Phase Signal:\\
+  Per-Shot Kinematic Inference and Its Effect on $(A_s,A_c)$ Recovery
+}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+%%============================================================
+\section{Problem Statement}
+\label{sec:problem}
+%%============================================================
+
+A gradiometer measures a weak, periodic phase signal $\beta=(A_s,A_c)$ by
+repeating a shot $i=0,\dots,N-1$ at a fixed rate, injecting a known
+sinusoidal phase modulation
+\begin{equation}
+  \delta\phi_i(\beta) = A_s\sin(2\pi f i) + A_c\cos(2\pi f i)
+  \label{eq:dphi}
+\end{equation}
+between two atom-interferometer (AI) measurement planes ($z=0$ and
+$z=100$), and reading out the result as a pixel-resolved fluorescence image
+at each plane. Each shot also carries an independent, a priori unknown
+common-mode phase offset $\phi_i\sim\mathrm{Uniform}(0,2\pi)$ (laser phase
+noise, not part of the signal), and the atom cloud itself has a shot-dependent
+8-dimensional phase-space state $\theta_{iz}$ (mean position/velocity and
+Gaussian spread, at plane $z$) that is \emph{not} directly observed --- only
+its effect on the recorded image is.
+
+The question this note answers empirically: \textbf{how much does it matter,
+for recovering $\beta$, how well $\theta_{iz}$ is estimated from the image?}
+We compare four ways of getting $\theta_{iz}$ (from a null guess, to a
+prior-art moment estimator, to the best pixel-likelihood estimator developed
+in this project, to the oracle/true value), holding the downstream
+signal-recovery step fixed, at two photon-count regimes ($10^6$ and $10^8$
+atoms per shot). No analytic/Fisher-information arguments are used anywhere
+in this note --- every number reported is a direct, empirical
+fit-vs.-ground-truth comparison on simulated data with known truth.
+
+%%============================================================
+\section{The Reduction: From $(A_s,A_c)$ to Per-Shot $\theta_{iz}$}
+\label{sec:reduction}
+%%============================================================
+
+This section derives, rigorously and explicitly, why estimating $\beta$
+reduces to (1) a per-shot, per-plane estimate of $\theta_{iz}$ from the
+image, followed by (2) a signal-fit step that only needs those estimates
+(and the raw pixel counts) as input -- not the images themselves. The
+notation matches \code{notes/joint\_profile\_inference.tex}
+(``Per-Shot Pixel Likelihood'' section there) exactly.
+
+\subsection{The observation model}
+
+At AI $z$, pixel $b$, detection state $s\in\{g,e\}$, shot $i$:
+\begin{equation}
+  n_{izsb} \sim \mathrm{Poisson}\bigl(\lambda_{izsb}\bigr), \qquad
+  \lambda_{izsb} = L_{iz}\Bigl[A_{sb}(\theta_{iz}) + C^c_{sb}(\theta_{iz})\cos\Phi_{iz}
+                                                    + C^s_{sb}(\theta_{iz})\sin\Phi_{iz}\Bigr],
+  \label{eq:obs-model}
+\end{equation}
+where $\Phi_{iz} = \phi_i + \delta\phi_i(\beta)\cdot[z{=}100]$ is the total
+phase seen at plane $z$, $(A,C^c,C^s)$ are the PSMAP-model coherence
+coefficients (Gaussian-cloud-averaged atom optics response, a deterministic
+function of $\theta_{iz}$ only -- see the ``Pixel ACS'' section of
+\code{joint\_profile\_inference.tex}), and $L_{iz}$ is a total-count
+normalisation fixed by the data (same reference, ``Objective Rescaling''
+recap equation), not a free parameter.
+
+\subsection{Step 1: the nuisance phase is a per-shot, per-plane-pair
+quantity}
+
+$\phi_i$ appears \emph{identically} in both planes' $\Phi_{iz}$ (shifted by
+the known $\delta\phi_i(\beta)$ at $z{=}100$) -- it is a single scalar
+nuisance per shot, not per plane. Marginalising it out of the per-shot
+likelihood,
+\begin{equation}
+  p(n_{i,0},n_{i,100}\mid\theta_{i,0},\theta_{i,100},\beta)
+  = \int_0^{2\pi} p(n_{i,0}\mid\theta_{i,0},\phi_i)\,
+              p(n_{i,100}\mid\theta_{i,100},\phi_i+\delta\phi_i(\beta))\;
+              \frac{d\phi_i}{2\pi},
+  \label{eq:marginal-phi}
+\end{equation}
+gives the shot's \emph{marginal} log-likelihood as a function of
+$(\theta_{i,0},\theta_{i,100},\beta)$ alone -- $\phi_i$ never needs to be
+reported or stored once this integral is done. This is a 1-dimensional,
+periodic, and (empirically, this project) cheap-to-integrate-numerically
+nuisance -- see \S\ref{sec:phi-marginal-method} for how it is done in
+practice.
+
+\subsection{Step 2: $\beta$ enters \emph{only} through $\delta\phi_i(\beta)$,
+which is known given $\theta$}
+
+For \emph{fixed} $\theta_{i,0},\theta_{i,100}$, the marginal likelihood
+(Eq.~\ref{eq:marginal-phi}) is a function of $\beta$ \emph{only} through the
+scalar $\delta\phi_i(\beta)$ -- a known, linear-in-$\beta$ function of the
+shot index $i$ (Eq.~\ref{eq:dphi}). This is the entire mechanism by which
+repeated shots pin down $(A_s,A_c)$: each shot supplies one (generally weak,
+individually) constraint on $\delta\phi_i(\beta)$, and because
+$\delta\phi_i(\beta)$ traces out a known sinusoid in $i$, combining $N$
+shots' constraints via
+\begin{equation}
+  \hat\beta = \arg\max_\beta \sum_{i=0}^{N-1}
+    \log p\bigl(n_{i,0},n_{i,100}\mid\hat\theta_{i,0},\hat\theta_{i,100},\beta\bigr)
+  \label{eq:beta-mle}
+\end{equation}
+recovers $\beta$ with a precision that improves with $N$ (standard harmonic
+regression). \textbf{Crucially, Eq.~\ref{eq:beta-mle} does not need the raw
+images at all once $\hat\theta_{iz}$ and the total per-pixel counts are
+in hand} -- the entire image-processing burden is front-loaded into
+estimating $\theta_{iz}$ per shot, and every method compared in this note
+differs \emph{only} in how that front-loaded estimate is produced.
+
+\subsection{The reduction, stated plainly}
+
+\begin{quote}
+\emph{Estimating the periodic signal $(A_s,A_c)$ from $N$ shots of
+pixel-resolved images reduces to: (a) for each shot and each plane,
+estimate the 8-dimensional cloud state $\theta_{iz}$ from that single
+image (after marginalising the shot's own unknown common phase $\phi_i$);
+then (b) fit $\beta$ against the known sinusoidal structure of
+$\delta\phi_i(\beta)$, using only the per-shot $\hat\theta_{iz}$ and raw
+photon counts as input.}
+\end{quote}
+
+This is why the four methods compared below (\S\ref{sec:methods}) differ
+\emph{only} in step (a) -- step (b) (Eq.~\ref{eq:beta-mle}, implemented via
+\code{map\_inference.py}'s \code{batch\_acs\_gh} + \code{total\_logL\_fast}
+pipeline) is held \emph{identical} across all four, so any difference in
+the resulting $\hat\beta$ is attributable entirely to the quality of the
+per-shot kinematic estimate.
+
+%%============================================================
+\section{Methods Compared}
+\label{sec:methods}
+%%============================================================
+
+All four methods below take one shot's pixel image (at one plane $z$) and
+return an estimate $\hat\theta_{iz}\in\R^8$; nothing else in the pipeline
+changes between them.
+
+\subsection{Null (uninformative baseline)}
+\[
+  \hat\theta_{iz}^{\rm null} = \bar\theta \quad\text{(the prior mean, every shot, always)}.
+\]
+Uses \emph{no} image information whatsoever. This is the floor any real
+method must beat, and (since it never varies) it directly shows what
+$\hat\beta$ looks like when the signal-fit step (Eq.~\ref{eq:beta-mle}) is
+handed a fixed, uninformative, shot-independent guess for $\theta$ at every
+shot -- isolating how much of the ultimately-recovered $\beta$ precision, if
+any, survives with zero per-shot kinematic information.
+
+\subsection{MAP-moments (prior art, \code{map\_inference.py})}
+\label{sec:map-moments}
+The existing pipeline: reduce the image to its first two port-summed
+spatial moments $(\hat\mu_{xf},\hat\mu_{yf},\hat V_{xf},\hat V_{yf})$, then
+apply the closed-form Kalman-gain MAP update
+$\hat\eta = \bar\eta + K(\hat M - A\bar\eta)$ (Eq.\ in
+\code{map\_inference.py}'s \code{map\_eta}) mapping the 4 observed moments
+to the 10-dimensional free-flight state $\eta$ (position/velocity means +
+full covariance, including a cross term $C_{xv0}$ that $\theta$ does not
+have). For comparison against the other three methods' $\theta$
+representation, $\eta$ is projected down to $\theta$ by taking
+$(\mu_{x0},\mu_{y0},\mu_{vx0},\mu_{vy0})$ directly and
+$\sigma_\bullet=\sqrt{V_\bullet}$ for the four spread components, discarding
+the estimated cross-covariance terms (which $\theta$-based methods do not
+attempt to estimate at all, and which the true generative model sets to
+zero exactly). This is a MAP point estimate under a Gaussian
+approximation to the moment likelihood -- it explicitly does \emph{not} use
+any pixel structure beyond the first two spatial moments.
+
+\subsection{Pixel-likelihood, best configuration}
+\label{sec:phi-marginal-method}
+The method developed over the course of this investigation: marginalise
+$\phi_i$ by \emph{direct numerical quadrature} over a dense grid
+($M=2000$ points, verified converged to $\sim10^{-9}$ absolute by varying
+$M$ from 500 to 8000 -- \S\ref{sec:qconv}), then optimise $\theta_{iz}$
+(8-dimensional) against the resulting smooth marginal log-likelihood via
+plain L-BFGS-B (\code{scipy.optimize.minimize}), with the model's own
+per-$\phi$-grid-point analytic-ish gradient (from
+\code{pixel\_acs\_grad.pixel\_acs\_and\_grad}) chained through the
+log-sum-exp marginalisation to give an efficient gradient for the outer
+$\theta$-optimisation (\S\ref{sec:analytic-grad}). This inverts the naive
+computational order (fix $\phi$, optimise $\theta$ conditionally at every
+grid point) that was found, over an extended debugging effort, to
+\emph{not} converge reliably at $10^8$ atoms -- see
+\code{notes/joint\_profile\_inference.tex}'s ``2026-07-20'' section for the
+full negative result this reframing supersedes.
+
+\textbf{Best configuration, established empirically (\S\ref{sec:hp}):}
+\begin{itemize}
+  \item \code{bins=32} (pixel grid resolution for the image binning)
+  \item \emph{tightened} image range: $\pm 1.54\,$mm instead of the
+    dataset's native $\pm 3\,$mm, set by the 99.99\%-flux-containment
+    radius measured across all 40 available runs (\S\ref{sec:tightrange}) --
+    essentially free (same bin count, same evaluation cost), and found to
+    give a comparable improvement to doubling the bin count, but at
+    $\sim\!1/4$ the compute cost.
+  \item \code{pixel\_n\_gh=8} (2D Gauss--Hermite velocity-quadrature order;
+    verified converged, no measurable effect from 4 to 16).
+\end{itemize}
+
+\subsection{Oracle}
+\[
+  \hat\theta_{iz}^{\rm oracle} = \theta_{iz}^{\rm true} \quad\text{(read directly from simulation metadata)}.
+\]
+Represents the shot-noise floor: the best any $\theta$-based pipeline could
+possibly do, since it has zero kinematic estimation error and only the
+signal-fit step's own Poisson noise remains.
+
+%%============================================================
+\section{Experimental Setup}
+\label{sec:setup}
+%%============================================================
+
+\begin{center}
+\begin{tabular}{@{}lp{10cm}@{}}
+\toprule
+Quantity & Value \\
+\midrule
+Datasets & $10^6$ atoms/shot (\code{R80\_N200\_A1000000\_...}), $10^8$ atoms/shot (\code{R40\_N50\_A100000000\_...}) \\
+Runs per dataset & 10 independent runs (different noise realisations of the same $\beta$) \\
+Shots per run & 50 (matched across both atom counts, apples-to-apples) \\
+Signal frequency & $f=0.3$ (cycles/shot) \\
+True signal & $A_s=0.08776$, $A_c=0.04794$ (same for both datasets) \\
+Prior & $\bar\theta=(0,0,0,0,100,100,100,100)\,\mu$m(/s), $\sigma_\theta=10\,\mu$m(/s) per component \\
+Best-config bins & 32, image half-range 1.54\,mm (native: 3.0\,mm) \\
+Signal-fit ($\beta$) pixel grid & bins=16, native full range, \code{gh\_order=12} (unchanged across all 4 methods) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Full derivations of the hyperparameter choices (\code{bins=32}, tight
+range, quadrature order) are given in Appendix~\ref{sec:hp}--\ref{sec:qconv}.
+
+%%============================================================
+\section{Results}
+\label{sec:results}
+%%============================================================
+
+\subsection{Kinematic parameter recovery}
+
+Figures~\ref{fig:res1e6}--\ref{fig:res1e8} show the pooled residual
+distributions (estimate $-$ truth, both AI planes, all 10 runs $\times$ 50
+shots $=$ 1000 samples per method) for all 8 kinematic parameters, at both
+atom counts. Table~\ref{tab:theta-rmse} gives the corresponding RMSE.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/residuals_1e6.png}
+  \caption{Kinematic parameter residuals, $10^6$ atoms.}
+  \label{fig:res1e6}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/residuals_1e8.png}
+  \caption{Kinematic parameter residuals, $10^8$ atoms.}
+  \label{fig:res1e8}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{Kinematic parameter RMSE by method and atom count. Position
+($\mu_{x0},\mu_{y0}$) and position-spread ($\sigma_x,\sigma_y$) are
+essentially unaffected by which method is used -- all three real methods
+sit close together, well above the (zero, by construction) oracle. Velocity
+mean ($\mu_{vx0},\mu_{vy0}$) shows a moderate, atom-count-independent
+advantage for moments/best over null. Velocity spread
+($\sigma_{vx},\sigma_{vy}$) is where the pixel-likelihood method's
+advantage is concentrated: roughly a $12$--$13\times$ tighter RMSE than
+moments, at \emph{both} atom counts.}
+\label{tab:theta-rmse}
+\begin{tabular}{lrrrr}
+\toprule
+& \multicolumn{2}{c}{$10^6$ atoms} & \multicolumn{2}{c}{$10^8$ atoms} \\
+Parameter & moments & best & moments & best \\
+\midrule
+$\mu_{x0}$      & $1.017\times10^{-5}$ & $1.017\times10^{-5}$ & $9.28\times10^{-6}$ & $9.28\times10^{-6}$ \\
+$\mu_{y0}$      & $9.68\times10^{-6}$  & $9.68\times10^{-6}$  & $9.30\times10^{-6}$ & $9.29\times10^{-6}$ \\
+$\mu_{vx0}$     & $2.70\times10^{-6}$  & $2.64\times10^{-6}$  & $2.48\times10^{-6}$ & $2.40\times10^{-6}$ \\
+$\mu_{vy0}$     & $2.56\times10^{-6}$  & $2.50\times10^{-6}$  & $2.47\times10^{-6}$ & $2.41\times10^{-6}$ \\
+$\sigma_x$      & $1.019\times10^{-5}$ & $1.019\times10^{-5}$ & $9.87\times10^{-6}$ & $9.88\times10^{-6}$ \\
+$\sigma_y$      & $1.000\times10^{-5}$ & $9.99\times10^{-6}$  & $9.83\times10^{-6}$ & $9.82\times10^{-6}$ \\
+$\sigma_{vx}$   & $8.92\times10^{-6}$  & $\mathbf{7.05\times10^{-7}}$ & $8.91\times10^{-6}$ & $\mathbf{6.70\times10^{-7}}$ \\
+$\sigma_{vy}$   & $8.83\times10^{-6}$  & $\mathbf{6.91\times10^{-7}}$ & $8.97\times10^{-6}$ & $\mathbf{6.73\times10^{-7}}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The pattern is remarkably consistent across the $100\times$ change in atom
+count: the pixel-likelihood method's advantage over moments is
+\emph{entirely} concentrated in the two velocity-spread components, at a
+roughly constant $\sim\!12$--$13\times$ RMSE reduction regardless of photon
+budget. This is consistent with the mechanism proposed in
+\S\ref{sec:map-moments}: the moment method only observes the detection-plane
+position variance $V_{xf}=V_{x0}+2T C_{xv0}+T^2 V_{vx0}$, a single scalar
+mixing three unknowns, so recovering $V_{vx0}$ specifically is weak and
+prior-dominated regardless of photon count; the pixel likelihood instead
+resolves the conditional-velocity structure directly from the fine-grained
+pixel pattern (the ``Pixel ACS'' section of \code{joint\_profile\_inference.tex}),
+which is a photon-count-independent geometric effect.
+
+\subsection{Signal $(A_s,A_c)$ recovery}
+
+Figure~\ref{fig:betascatter} shows $(\hat A_s,\hat A_c)$ for all 10
+independent runs, by method and atom count. Table~\ref{tab:beta-rmse} gives
+the RMSE.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/beta_scatter_1e6.png}
+  \\[6pt]
+  \includegraphics[width=\textwidth]{figures/beta_scatter_1e8.png}
+  \caption{$(\hat A_s,\hat A_c)$ across 10 independent runs. Top: $10^6$
+  atoms. Bottom: $10^8$ atoms. Note: axes are shared across the 4 panels
+  within each row, so the visual tightening from null/moments to
+  best/oracle is directly comparable.}
+  \label{fig:betascatter}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{Signal $(A_s,A_c)$ RMSE by method and atom count, $N=10$ independent runs.}
+\label{tab:beta-rmse}
+\begin{tabular}{lrrrr}
+\toprule
+& \multicolumn{2}{c}{$10^6$ atoms} & \multicolumn{2}{c}{$10^8$ atoms} \\
+Method & RMSE($A_s$) & RMSE($A_c$) & RMSE($A_s$) & RMSE($A_c$) \\
+\midrule
+Null              & 0.001412 & 0.000737 & 0.000641 & 0.001078 \\
+MAP-moments       & 0.001284 & 0.000636 & 0.000566 & 0.000936 \\
+Pixel-likelihood (best) & $\mathbf{0.000495}$ & $\mathbf{0.000321}$ & $\mathbf{0.000074}$ & $\mathbf{0.000086}$ \\
+Oracle            & 0.000468 & 0.000304 & 0.000032 & 0.000020 \\
+\midrule
+Best / moments ratio & 0.386 & 0.505 & 0.131 & 0.092 \\
+Best / oracle ratio  & 1.058 & 1.056 & 2.31  & 4.30  \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%%============================================================
+\section{Discussion}
+\label{sec:discussion}
+%%============================================================
+
+\textbf{The kinematic-recovery advantage survives into a real, substantial
+$\beta$-level improvement, and grows sharply with photon count.} At
+$10^6$ atoms, the pixel-likelihood method beats the existing moment-based
+estimator by $2.0$--$2.6\times$ in $\beta$ RMSE, and lands within $\sim\!6\%$
+of the oracle (shot-noise) floor -- there is very little room left to
+improve at this photon budget, consistent with earlier work in this project
+finding \code{map\_inference.py} already close to its Cram\'er--Rao bound
+at $10^6$ atoms. At $10^8$ atoms the picture changes qualitatively: moments
+barely beats the uninformative null baseline (RMSE ratio $0.566/0.641=0.88$
+on $A_s$), while the pixel-likelihood method is $7.6$--$10.9\times$ better
+than moments and still has a genuine $2.3$--$4.3\times$ gap remaining to the
+oracle floor -- i.e., at high photon count there is both a large amount of
+information the moment method fails to extract, \emph{and} a large amount
+the pixel-likelihood method (in its current, non-exhaustively-tuned
+configuration) also leaves on the table.
+
+\textbf{Why the effect is atom-count-dependent even though the kinematic
+RMSE ratio (Table~\ref{tab:theta-rmse}) is not:} the $\sim\!12$--$13\times$
+tightening of $\sigma_{vx},\sigma_{vy}$ is essentially constant across the
+$100\times$ atom-count range, yet its effect on $\beta$ grows by
+roughly $4$--$5\times$ from $10^6$ to $10^8$. This means the downstream
+signal-fit step's \emph{sensitivity} to residual velocity-spread error, not
+the size of that error itself, is what scales with photon count -- plausible
+since more photons per shot let the signal-fit likelihood itself resolve
+finer distinctions in the effective phase information, making it less
+tolerant of a given absolute kinematic bias. This is stated as an
+observation, not yet independently verified by a dedicated sensitivity
+check.
+
+\textbf{Caveats.} $N_{\rm RUNS}=10$ is a real but not huge sample -- the
+$\beta$ RMSE numbers in Table~\ref{tab:beta-rmse} carry meaningful sampling
+uncertainty of their own (not quantified here; a bootstrap or larger-$N$
+re-run would tighten this). The pixel-likelihood configuration
+(\code{bins=32}, tight range) was chosen by a hyperparameter search focused
+on \emph{kinematic}-level RMSE (Appendix~\ref{sec:hp}), not by directly
+optimising $\beta$-level RMSE -- the remaining oracle gap at $10^8$ atoms
+suggests further gains may be available by pushing \code{bins} past 32 or
+tuning the range cutoff more aggressively, not yet tested end-to-end through
+the $\beta$-fit at this larger scale. Finally, all "best"-method fits used
+the identical downstream $\beta$-fit configuration (\code{bins=16}, native
+range, \code{gh\_order=12}) as the other three methods, by design
+(\S\ref{sec:reduction}) -- so none of the reported gain comes from also
+improving that shared step.
+
+%%============================================================
+\appendix
+\section{Supporting Methodology}
+
+\subsection{Quadrature convergence for the $\phi$-marginal}
+\label{sec:qconv}
+
+The $\phi$-marginal integral (Eq.~\ref{eq:marginal-phi}) is evaluated on a
+uniform grid of $M$ points over $[0,2\pi)$ via
+\code{scipy.special.logsumexp} for numerical stability. $M$ was varied
+from 500 to 8000 (on 3 independent test shots) and the resulting
+$\hat\theta_{\rm MAP}$ tracked: it is stable to $\sim\!10^{-9}$ absolute
+(against a parameter natural scale of $\sim\!10^{-5}$) already at $M=2000$,
+which is the value used throughout this note.
+
+\subsection{Tight-range derivation}
+\label{sec:tightrange}
+
+The dataset's native image half-range ($\pm3\,$mm) is set generously to
+guarantee no clipping under worst-case cloud excursions, but the
+\emph{bulk} of the photon flux occupies a much smaller region. Aggregating
+photon counts vs.\ $|{\rm position}|$ across all 40 available runs (both
+$10^6$ and $10^8$ atom datasets separately, giving consistent results:
+$1.540\,$mm vs.\ $1.537\,$mm respectively) gives the following
+flux-containment radii:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Fraction of total counts contained & half-range needed & ratio to native \\
+\midrule
+99\%     & $1.003\,$mm & $0.335$ \\
+99.9\%   & $1.294\,$mm & $0.431$ \\
+99.99\%  & $1.540\,$mm & $0.513$ \\
+99.999\% & $1.762\,$mm & $0.587$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$99.99\%$ containment ($1.54\,$mm) was chosen: it loses only 1 photon in
+$10^4$ (negligible relative to Poisson noise itself) while roughly halving
+the pixel size at fixed \code{bins} -- i.e., a resolution improvement
+essentially free of extra compute, since the number of bins (and hence the
+model-evaluation cost) is unchanged; only the physical size each bin covers
+shrinks.
+
+\subsection{Hyperparameter sweep: bins vs.\ tight range, and whether they
+compound}
+\label{sec:hp}
+
+Comparing \code{bins}$\in\{16,32\}$ crossed with \{native range, tight
+range\} on the same 50-shot test set (velocity-spread RMSE, the parameters
+where any effect is seen at all):
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Configuration & RMSE($\sigma_{vx}$) & RMSE($\sigma_{vy}$) \\
+\midrule
+bins=16, native range (baseline)  & $8.69\times10^{-7}$ & $8.60\times10^{-7}$ \\
+bins=32, native range             & $7.14\times10^{-7}$ & $6.63\times10^{-7}$ \\
+bins=16, tight range              & $7.25\times10^{-7}$ & $6.81\times10^{-7}$ \\
+bins=32, tight range (both)       & $6.99\times10^{-7}$ & $6.34\times10^{-7}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The two do \emph{not} compound multiplicatively: combining both tricks
+($0.805$/$0.737\times$ baseline) is only marginally better than either
+alone ($0.821/0.771\times$ for bins=32; $0.835/0.792\times$ for tight
+range), far short of the $\sim\!0.63$--$0.68\times$ a naive independent-effects
+multiplication would predict. This indicates bins and range are tapping a
+shared underlying resource (spatial resolution near the flux-dense region),
+not two independent information sources, and that a real ceiling exists
+around $\sim\!20$--$26\%$ improvement from spatial resolution alone at this
+photon range. \code{bins=32} + tight range was used as "best" throughout
+this note as the best-available combination, despite the modest marginal
+gain over tight-range-alone, for consistency with the rest of the
+investigation; a cost-sensitive deployment might prefer \code{bins=16} +
+tight range for $\sim\!4\times$ lower compute at comparable quality.
+
+\subsection{Semi-analytic gradient for the $\phi$-marginal, and why it was
+necessary}
+\label{sec:analytic-grad}
+
+An initial attempt to estimate $\theta$'s local posterior curvature
+(Hessian, for a Laplace-approximation uncertainty estimate) via finite
+differences of the raw marginal NLL failed badly: the resulting Hessian had
+negative eigenvalues and several exactly-zero implied variances, for a
+majority of test shots, regardless of step-size tuning (fixed or adaptive).
+The root cause: \emph{differentiating an already-approximate derivative}
+-- \code{pixel\_acs\_grad.pixel\_acs\_and\_grad} itself computes $\theta$'s
+gradient via an internal finite difference (\code{h\_theta=1e-9}), and a
+second (outer) finite difference on top of that compounds numerical noise
+in a way that step-size tuning could not reliably fix.
+
+The fix: since $\phi$ only enters the model by combining $\theta$-dependent,
+$\phi$-independent coefficients $(A,C^c,C^s)$ via $\cos\Phi,\sin\Phi$
+(Eq.~\ref{eq:obs-model}), \code{pixel\_acs\_and\_grad} needs to be called
+only \emph{once} per $\theta$ (already the case), and its returned
+per-$\theta$-component gradient can be chained through the log-sum-exp
+marginalisation analytically:
+\begin{equation}
+  \frac{\partial\,\text{marginal NLL}}{\partial\theta_k}
+  = \sum_{m=1}^M w_m\,\frac{\partial\,\mathrm{NLL}(\theta,\phi_m)}{\partial\theta_k},
+  \qquad w_m = \mathrm{softmax}_m\bigl(-\mathrm{NLL}(\theta,\phi_m)\bigr),
+\end{equation}
+i.e.\ a $\phi$-posterior-weighted average of the per-grid-point gradient --
+no new finite differences introduced at the marginalisation step. This was
+validated against a plain finite-difference gradient of the marginal NLL
+at a fixed test point: relative agreement $\sim\!10^{-7}$--$10^{-4}$
+component-wise, confirming correctness of the chain rule. Using this
+gradient (\code{jac=True} in \code{scipy.optimize.minimize}) also
+substantially speeds up the $\theta$-optimisation itself (converges in
+$\sim\!6$ iterations vs.\ needing scipy's own finite-difference outer
+gradient otherwise).
+
+\end{document}
