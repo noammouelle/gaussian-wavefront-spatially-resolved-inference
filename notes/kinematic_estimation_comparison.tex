@@ -313,14 +313,53 @@ The pattern is remarkably consistent across the $100\times$ change in atom
 count: the pixel-likelihood method's advantage over moments is
 \emph{entirely} concentrated in the two velocity-spread components, at a
 roughly constant $\sim\!12$--$13\times$ RMSE reduction regardless of photon
-budget. This is consistent with the mechanism proposed in
-\S\ref{sec:map-moments}: the moment method only observes the detection-plane
-position variance $V_{xf}=V_{x0}+2T C_{xv0}+T^2 V_{vx0}$, a single scalar
-mixing three unknowns, so recovering $V_{vx0}$ specifically is weak and
-prior-dominated regardless of photon count; the pixel likelihood instead
-resolves the conditional-velocity structure directly from the fine-grained
-pixel pattern (the ``Pixel ACS'' section of \code{joint\_profile\_inference.tex}),
-which is a photon-count-independent geometric effect.
+budget.
+
+\paragraph{Checking the mechanism directly, rather than assuming it.} A
+first hypothesis was that this concentrates on velocity spread because the
+moment method only observes the detection-plane position variance
+$V_{xf}=V_{x0}+2T C_{xv0}+T^2 V_{vx0}$, a single scalar mixing three
+unknowns -- predicting that moments' $\sigma_x$ and $\sigma_{vx}$
+\emph{errors} should be anti-correlated (trading off against each other to
+keep $V_{xf}$ fixed). Figure~\ref{fig:res2d1e8} tests this directly by
+plotting the joint residual distribution for exactly this pair (and the
+analogous mean-parameter pair), per method. \textbf{The na\"ive trade-off
+hypothesis is wrong for moments}: $(\sigma_x,\sigma_{vx})$ residuals are
+essentially uncorrelated for moments (Pearson $r=-0.06$ at $10^8$ atoms,
+$-0.04$ at $10^6$) -- moments' large $\sigma_{vx}$ error is not a
+correlated trade-off against $\sigma_x$, it is simply weakly constrained
+and close to independent prior-dominated noise. What \emph{is} true, and
+turns out to be the more informative finding: the pixel-likelihood method's
+$(\sigma_x,\sigma_{vx})$ residuals are almost perfectly anti-correlated
+($r=-0.99$, both atom counts) -- and the same near-perfect anti-correlation
+appears for the mean pair $(\mu_{x0},\mu_{vx0})$ for \emph{both} methods
+($r=-0.97$ moments, $r{\approx}{-1.00}$ best). This is the signature of a
+genuinely well-constrained detection-plane observable (approximately
+$\mu_{xf}\approx\mu_{x0}+T\mu_{vx0}$, and analogously for the variance):
+a good estimator's errors in the two initial-state components must move
+oppositely to keep the well-determined combination correct, concentrating
+residual uncertainty in the orthogonal, genuinely underdetermined direction.
+Moments shows this structure clearly for the \emph{mean} pair but not the
+\emph{spread} pair; the pixel-likelihood method shows it clearly for
+\emph{both} -- i.e., the moment method fails to extract the (nonlinear,
+quadratic-in-cloud-parameters) $V_{xf}$ constraint at all, while the pixel
+likelihood recovers it about as well as it recovers the (linear) $\mu_{xf}$
+constraint. This is a more precise, and different, explanation than the
+originally-hypothesized simple trade-off, and was only established by
+checking the correlation structure directly rather than assuming it from
+the model equations.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/residuals_2d_1e8.png}
+  \caption{Joint residual structure for physically-coupled parameter pairs,
+  $10^8$ atoms (see Appendix~\ref{sec:2dcorr} for the $10^6$-atom version,
+  which shows the identical pattern). Density contours from a Gaussian KDE;
+  points shown at 25\% opacity. Note the near-perfect anti-correlation for
+  \emph{both} pairs for the pixel-likelihood method, vs.\ only the mean
+  pair for moments.}
+  \label{fig:res2d1e8}
+\end{figure}
 
 \subsection{Signal $(A_s,A_c)$ recovery}
 
@@ -412,6 +451,19 @@ improving that shared step.
 %%============================================================
 \appendix
 \section{Supporting Methodology}
+
+\subsection{Joint residual structure at $10^6$ atoms}
+\label{sec:2dcorr}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{figures/residuals_2d_1e6.png}
+  \caption{Joint residual structure (same pairs, same layout as
+  Figure~\ref{fig:res2d1e8}), $10^6$ atoms. The correlation pattern
+  discussed in \S\ref{sec:results} is essentially identical to the
+  $10^8$-atom case.}
+  \label{fig:res2d1e6}
+\end{figure}
 
 \subsection{Quadrature convergence for the $\phi$-marginal}
 \label{sec:qconv}
