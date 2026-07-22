@@ -542,6 +542,38 @@ gain over tight-range-alone, for consistency with the rest of the
 investigation; a cost-sensitive deployment might prefer \code{bins=16} +
 tight range for $\sim\!4\times$ lower compute at comparable quality.
 
+\paragraph{A third bins value reveals the tight-range trick is not
+universally beneficial.} Adding \code{bins=8} + tight range to the
+comparison:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Configuration & RMSE($\sigma_{vx}$) & RMSE($\sigma_{vy}$) \\
+\midrule
+bins=16, native range (baseline)  & $8.69\times10^{-7}$ & $8.60\times10^{-7}$ \\
+\textbf{bins=8, tight range}      & $\mathbf{9.55\times10^{-7}}$ & $\mathbf{9.62\times10^{-7}}$ \\
+bins=16, tight range              & $7.25\times10^{-7}$ & $6.81\times10^{-7}$ \\
+bins=32, tight range              & $6.99\times10^{-7}$ & $6.34\times10^{-7}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At \code{bins=8}, tight range is \emph{worse} than the bins=16, native-range
+baseline ($1.10\times$/$1.12\times$, i.e.\ a $\sim\!10\%$ regression) --
+despite each pixel still being physically smaller in absolute terms
+($0.385\,$mm vs.\ the native-range bins=8 pixel width of $0.75\,$mm). This
+means the earlier framing (``tight range is essentially free and helps'')
+is incomplete: it only helps once \code{bins} is already large enough to
+exploit the freed-up resolution; at too few bins, whatever information is
+lost by clipping the (mostly empty, but not perfectly empty) outer image
+apparently outweighs the gain from finer pixel spacing. The bins=16$\to$32
+trend genuinely flattens (a real, near-plateau ceiling, \S\ref{sec:hp}
+above), but bins=8 is not on that same monotonic curve -- it is a
+qualitatively worse regime, not merely a smaller improvement. Any future
+attempt to push \code{bins} \emph{below} 16 with the tight-range trick
+should not be assumed safe without re-checking this non-monotonicity.
+
 \subsection{Semi-analytic gradient for the $\phi$-marginal, and why it was
 necessary}
 \label{sec:analytic-grad}
