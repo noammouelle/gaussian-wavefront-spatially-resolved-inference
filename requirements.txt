@@ -1,0 +1,15 @@
+# Python 3.13.9
+numpy==2.3.4
+scipy==1.16.3
+h5py==3.15.1
+matplotlib==3.10.7
+pandas==3.0.3
+jupyter
+
+# GPU acceleration (optional but strongly recommended -- map_inference.py
+# and pixel_acs_grad*.py use cupy when available and fall back to numpy
+# otherwise; the "best"/pixel-likelihood method is orders of magnitude
+# slower on CPU). Requires an NVIDIA GPU + CUDA 13.x driver.
+# If your CUDA version differs, install the matching cupy-cudaXXx wheel
+# instead -- see https://docs.cupy.dev/en/stable/install.html
+cupy-cuda13x==13.6.0

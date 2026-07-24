@@ -1,0 +1,37 @@
+=== Kinematic parameter RMSE ===
+
+$10^6$ atoms:
+param              null      moments         best       oracle
+mu_x0        1.0479e-05   1.0167e-05   1.0166e-05   0.0000e+00 
+mu_y0        1.0034e-05   9.6781e-06   9.6757e-06   0.0000e+00 
+mu_vx0       1.0230e-05   2.7015e-06   2.6383e-06   0.0000e+00 
+mu_vy0       9.9917e-06   2.5569e-06   2.4994e-06   0.0000e+00 
+sigma_x      1.0195e-05   1.0193e-05   1.0192e-05   0.0000e+00 
+sigma_y      1.0004e-05   1.0001e-05   9.9898e-06   0.0000e+00 
+sigma_vx     1.0028e-05   8.9224e-06   7.0531e-07   0.0000e+00 
+sigma_vy     9.9193e-06   8.8260e-06   6.9089e-07   0.0000e+00 
+
+$10^8$ atoms:
+param              null      moments         best       oracle
+mu_x0        9.5452e-06   9.2761e-06   9.2786e-06   0.0000e+00 
+mu_y0        9.7368e-06   9.2975e-06   9.2946e-06   0.0000e+00 
+mu_vx0       9.8303e-06   2.4810e-06   2.4021e-06   0.0000e+00 
+mu_vy0       1.0280e-05   2.4657e-06   2.4076e-06   0.0000e+00 
+sigma_x      9.8672e-06   9.8664e-06   9.8774e-06   0.0000e+00 
+sigma_y      9.8370e-06   9.8326e-06   9.8224e-06   0.0000e+00 
+sigma_vx     1.0010e-05   8.9144e-06   6.7032e-07   0.0000e+00 
+sigma_vy     1.0096e-05   8.9650e-06   6.7308e-07   0.0000e+00 
+
+=== Beta RMSE ===
+
+$10^6$ atoms:
+  null      : RMSE(As)=0.001412  RMSE(Ac)=0.000737
+  moments   : RMSE(As)=0.001284  RMSE(Ac)=0.000636
+  best      : RMSE(As)=0.000495  RMSE(Ac)=0.000321
+  oracle    : RMSE(As)=0.000468  RMSE(Ac)=0.000304
+
+$10^8$ atoms:
+  null      : RMSE(As)=0.000641  RMSE(Ac)=0.001078
+  moments   : RMSE(As)=0.000566  RMSE(Ac)=0.000936
+  best      : RMSE(As)=0.000074  RMSE(Ac)=0.000086
+  oracle    : RMSE(As)=0.000032  RMSE(Ac)=0.000020
