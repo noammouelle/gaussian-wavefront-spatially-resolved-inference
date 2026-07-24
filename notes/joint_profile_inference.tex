@@ -1164,10 +1164,10 @@ same shots, converted to the same 8-parameter representation:
 \toprule
 Parameter group & Pixel-likelihood RMSE & Moment RMSE & Ratio \\
 \midrule
-Position ($\mu_{x0},\mu_{y0}$)        & $\sim9.6$--$9.7\times10^{-6}$ & $\sim9.6$--$9.7\times10^{-6}$ & $\sim1.0$ (tied) \\
-Velocity mean ($\mu_{vx0},\mu_{vy0}$) & $\sim2.5\times10^{-6}$        & $\sim2.5\times10^{-6}$        & $\sim1.01$--$1.02$ (slightly worse) \\
-Position spread ($\sigma_x,\sigma_y$) & $\sim9$--$10.5\times10^{-6}$  & $\sim9$--$10.6\times10^{-6}$  & $\sim0.99$ (slightly better) \\
-\textbf{Velocity spread ($\sigma_{vx},\sigma_{vy}$)} & $\mathbf{\sim0.66\text{--}0.87\times10^{-6}}$ & $\mathbf{\sim7.4\text{--}8.6\times10^{-6}}$ & $\mathbf{\sim0.08\text{--}0.12\ (8\text{--}12\times\text{ better})}$ \\
+Position ($\mu_{x0},\mu_{y0}$) [$\mu$m]        & $\sim9.6$--$9.7$ & $\sim9.6$--$9.7$ & $\sim1.0$ (tied) \\
+Velocity mean ($\mu_{vx0},\mu_{vy0}$) [$\mu$m/s] & $\sim2.5$        & $\sim2.5$        & $\sim1.01$--$1.02$ (slightly worse) \\
+Position spread ($\sigma_x,\sigma_y$) [$\mu$m] & $\sim9$--$10.5$  & $\sim9$--$10.6$  & $\sim0.99$ (slightly better) \\
+\textbf{Velocity spread ($\sigma_{vx},\sigma_{vy}$)} [$\mu$m/s] & $\mathbf{\sim0.66\text{--}0.87}$ & $\mathbf{\sim7.4\text{--}8.6}$ & $\mathbf{\sim0.08\text{--}0.12\ (8\text{--}12\times\text{ better})}$ \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1221,11 +1221,11 @@ $\eta$ is estimated):
 \begin{center}
 \begin{tabular}{lcc}
 \toprule
-$\eta$ source & RMSE($A_s$) & RMSE($A_c$) \\
+$\eta$ source & RMSE($A_s$) [mrad] & RMSE($A_c$) [mrad] \\
 \midrule
-\code{theta\_map\_eta} (this section's method) & $\mathbf{0.000106}$ & $\mathbf{0.000089}$ \\
-\code{moments} (existing baseline)             & $0.000255$          & $0.000171$          \\
-\code{oracle\_eta} (true $\eta$, ceiling)       & $0.000032$          & $0.000022$          \\
+\code{theta\_map\_eta} (this section's method) & $\mathbf{0.106}$ & $\mathbf{0.089}$ \\
+\code{moments} (existing baseline)             & $0.255$          & $0.171$          \\
+\code{oracle\_eta} (true $\eta$, ceiling)       & $0.032$          & $0.022$          \\
 \bottomrule
 \end{tabular}
 \end{center}

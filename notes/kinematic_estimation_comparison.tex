@@ -64,12 +64,40 @@ fit-vs.-ground-truth comparison on simulated data with known truth.
 \label{sec:reduction}
 %%============================================================
 
-This section derives, rigorously and explicitly, why estimating $\beta$
-reduces to (1) a per-shot, per-plane estimate of $\theta_{iz}$ from the
-image, followed by (2) a signal-fit step that only needs those estimates
-(and the raw pixel counts) as input -- not the images themselves. The
-notation matches \code{notes/joint\_profile\_inference.tex}
+This section derives why estimating $\beta$ reduces to (1) a per-shot,
+per-plane estimate of $\theta_{iz}$ from the image, followed by (2) a
+signal-fit step that takes those estimates (and per-shot photon counts) as
+input. The notation matches \code{notes/joint\_profile\_inference.tex}
 (``Per-Shot Pixel Likelihood'' section there) exactly.
+
+\paragraph{Scope of the reduction, stated up front.} Two facts below are
+\emph{exact} regardless of how the image is read out: the per-shot phase
+$\phi_i$ is a single scalar nuisance shared across both planes
+(\S\ref{sec:step1}), and $\beta$ enters \emph{only} through the scalar
+$\delta\phi_i(\beta)$ (\S\ref{sec:step2}). Two further steps are
+\emph{approximations}, and it is important not to conflate them with the
+exact structure:
+\begin{enumerate}
+  \item \textbf{Plug-in $\theta$.} Eq.~\ref{eq:beta-mle} fixes $\theta$ at a
+    per-shot point estimate $\hat\theta_{iz}$ and maximises over $\beta$,
+    rather than marginalising $\theta$ against its posterior. This is exact
+    only in the sharp-$\theta$-posterior (high photon-count) limit; in
+    general it discards the ($\beta$-dependent) width of the
+    $\theta$-posterior.
+  \item \textbf{Position averaging.} As \emph{implemented}
+    (\code{map\_inference.py}'s \code{total\_logL\_fast}\,/\,%
+    \code{\_ai\_ll\_batch}), the signal-fit step uses only the
+    \emph{port-summed total counts} $(n_g,n_e)$ per plane against the
+    \emph{spatially-integrated} coherence coefficients $(A,C^c,C^s)$ --- i.e.\
+    a two-bin (port-$g$/port-$e$) Poisson likelihood per plane, not the full
+    pixel-resolved image likelihood. See \S\ref{sec:whatimplemented} for why
+    this is \emph{not} the same as the full-image likelihood, and $\hat\theta$
+    is \emph{not} a sufficient statistic for $\beta$.
+\end{enumerate}
+In other words, the clean statement ``$\beta$-fit needs only $\hat\theta$ and
+counts, not the images'' is a property of the \emph{position-averaged}
+(port-population) model that this pipeline actually uses --- it is not a
+lossless reduction of the full-image likelihood.
 
 \subsection{The observation model}
 
@@ -90,6 +118,7 @@ recap equation), not a free parameter.
 
 \subsection{Step 1: the nuisance phase is a per-shot, per-plane-pair
 quantity}
+\label{sec:step1}
 
 $\phi_i$ appears \emph{identically} in both planes' $\Phi_{iz}$ (shifted by
 the known $\delta\phi_i(\beta)$ at $z{=}100$) -- it is a single scalar
@@ -111,6 +140,7 @@ practice.
 
 \subsection{Step 2: $\beta$ enters \emph{only} through $\delta\phi_i(\beta)$,
 which is known given $\theta$}
+\label{sec:step2}
 
 For \emph{fixed} $\theta_{i,0},\theta_{i,100}$, the marginal likelihood
 (Eq.~\ref{eq:marginal-phi}) is a function of $\beta$ \emph{only} through the
@@ -126,11 +156,13 @@ shots' constraints via
   \label{eq:beta-mle}
 \end{equation}
 recovers $\beta$ with a precision that improves with $N$ (standard harmonic
-regression). \textbf{Crucially, Eq.~\ref{eq:beta-mle} does not need the raw
-images at all once $\hat\theta_{iz}$ and the total per-pixel counts are
-in hand} -- the entire image-processing burden is front-loaded into
+regression). The entire image-processing burden is front-loaded into
 estimating $\theta_{iz}$ per shot, and every method compared in this note
-differs \emph{only} in how that front-loaded estimate is produced.
+differs \emph{only} in how that front-loaded estimate is produced. What
+information the signal-fit likelihood in Eq.~\ref{eq:beta-mle} actually
+consumes -- the full pixel-resolved image, or a position-averaged summary
+of it -- is the subject of \S\ref{sec:whatimplemented}, and matters for how
+lossless the reduction is.
 
 \subsection{The reduction, stated plainly}
 
@@ -150,6 +182,63 @@ This is why the four methods compared below (\S\ref{sec:methods}) differ
 pipeline) is held \emph{identical} across all four, so any difference in
 the resulting $\hat\beta$ is attributable entirely to the quality of the
 per-shot kinematic estimate.
+
+\subsection{What step (b) actually consumes: a port-population likelihood,
+not the full image}
+\label{sec:whatimplemented}
+
+The reduction quoted above is exact as a \emph{structural} statement (Steps
+1--2), but the phrase ``uses only $\hat\theta$ and raw counts, not the
+images'' hides a modelling choice that is worth stating precisely, because
+it makes the reduction lossy at the full-image level.
+
+\paragraph{What is implemented.} The signal-fit likelihood
+(\code{total\_logL\_fast} $\to$ \code{\_ai\_ll\_batch}) evaluates, per shot
+and per plane, a \emph{two-bin Poisson} likelihood in the total port counts
+$(n_g,n_e)=\bigl(\sum_b n_{izgb},\ \sum_b n_{izeb}\bigr)$ against
+\emph{spatially-integrated} coefficients
+$\bigl(A_s,C^c_s,C^s_s\bigr)=\sum_b\bigl(A_{sb},C^c_{sb},C^s_{sb}\bigr)$
+(the six numbers returned by \code{batch\_acs\_gh} per shot). The
+pixel-resolved image $n_{izsb}$ enters the pipeline \emph{only} through the
+upstream estimate $\hat\theta_{iz}$; it never appears in the $\beta$-fit
+itself. This is a \emph{position-averaged} (port-population) likelihood.
+
+\paragraph{Why this is not the full-image likelihood.} In the observation
+model (Eq.~\ref{eq:obs-model}) the phase enters through
+\emph{pixel-dependent} fringe coefficients $C^c_{sb}(\theta)$,
+$C^s_{sb}(\theta)$: the signal phase $\Phi_{iz}$ (hence $\delta\phi_i(\beta)$,
+hence $\beta$) modulates the \emph{spatial pattern}, not merely the per-port
+totals. Summing over pixels to form $(n_g,n_e)$ keeps only the projection
+$\sum_b C^c_{sb}$ (one number per port) and discards the rest of the fringe's
+$\beta$-dependence. Consequently:
+\begin{itemize}
+  \item $\hat\theta_{iz}$ is \textbf{not} a sufficient statistic for
+    $\beta$: there is no factorisation theorem here, and indeed $\hat\theta$
+    is estimated \emph{after} marginalising $\phi_i$
+    (Eq.~\ref{eq:marginal-phi}), so by construction it carries essentially
+    no phase information. The $\beta$-information and the $\theta$-information
+    live in different features of the image.
+  \item The full-image profile likelihood
+    $\prod_i p\bigl(\{n_{izsb}\}\mid\hat\theta_{iz},\beta\bigr)$ ---
+    i.e.\ Eq.~\ref{eq:beta-mle} taken literally, with the full pixel image
+    rather than the port totals --- would additionally exploit the
+    pixel-resolved fringe, and is therefore (weakly) \emph{more} informative
+    about $\beta$ than the port-population fit this note uses. How much is
+    left on the table depends on how strongly $C^c_{sb},C^s_{sb}$ vary across
+    pixels relative to their integrals; it is not quantified here.
+\end{itemize}
+
+\paragraph{Where the reduction \emph{is} clean.} For the position-averaged
+model that is actually run, the statement ``estimate $\theta$ from the image,
+then fit $\beta$ from the port counts'' is self-consistent and (up to the
+plug-in-$\theta$ approximation of \S\ref{sec:reduction}) exact: the port
+populations depend on $\beta$ only through $\delta\phi_i(\beta)$ and the
+$\theta$-dependent integrated coefficients, exactly as Eq.~\ref{eq:beta-mle}
+uses them. The caveat is only that this port-population likelihood is a
+deliberately averaged view of the data, so the comparison in this note is
+between kinematic estimators \emph{holding that averaged signal-fit fixed} ---
+it does not claim to have extracted every bit of $\beta$-information the full
+images contain.
 
 %%============================================================
 \section{Methods Compared}
@@ -282,7 +371,9 @@ atom counts. Table~\ref{tab:theta-rmse} gives the corresponding RMSE.
 
 \begin{table}[htbp]
 \centering
-\caption{Kinematic parameter RMSE by method and atom count. Position
+\caption{Kinematic parameter RMSE by method and atom count, in
+$\mu$m ($\mu_{x0},\mu_{y0},\sigma_x,\sigma_y$) or $\mu$m/s
+($\mu_{vx0},\mu_{vy0},\sigma_{vx},\sigma_{vy}$). Position
 ($\mu_{x0},\mu_{y0}$) and position-spread ($\sigma_x,\sigma_y$) are
 essentially unaffected by which method is used -- all three real methods
 sit close together, well above the (zero, by construction) oracle. Velocity
@@ -297,14 +388,14 @@ moments, at \emph{both} atom counts.}
 & \multicolumn{2}{c}{$10^6$ atoms} & \multicolumn{2}{c}{$10^8$ atoms} \\
 Parameter & moments & best & moments & best \\
 \midrule
-$\mu_{x0}$      & $1.017\times10^{-5}$ & $1.017\times10^{-5}$ & $9.28\times10^{-6}$ & $9.28\times10^{-6}$ \\
-$\mu_{y0}$      & $9.68\times10^{-6}$  & $9.68\times10^{-6}$  & $9.30\times10^{-6}$ & $9.29\times10^{-6}$ \\
-$\mu_{vx0}$     & $2.70\times10^{-6}$  & $2.64\times10^{-6}$  & $2.48\times10^{-6}$ & $2.40\times10^{-6}$ \\
-$\mu_{vy0}$     & $2.56\times10^{-6}$  & $2.50\times10^{-6}$  & $2.47\times10^{-6}$ & $2.41\times10^{-6}$ \\
-$\sigma_x$      & $1.019\times10^{-5}$ & $1.019\times10^{-5}$ & $9.87\times10^{-6}$ & $9.88\times10^{-6}$ \\
-$\sigma_y$      & $1.000\times10^{-5}$ & $9.99\times10^{-6}$  & $9.83\times10^{-6}$ & $9.82\times10^{-6}$ \\
-$\sigma_{vx}$   & $8.92\times10^{-6}$  & $\mathbf{7.05\times10^{-7}}$ & $8.91\times10^{-6}$ & $\mathbf{6.70\times10^{-7}}$ \\
-$\sigma_{vy}$   & $8.83\times10^{-6}$  & $\mathbf{6.91\times10^{-7}}$ & $8.97\times10^{-6}$ & $\mathbf{6.73\times10^{-7}}$ \\
+$\mu_{x0}$ [$\mu$m]        & $10.17$ & $10.17$ & $9.28$ & $9.28$ \\
+$\mu_{y0}$ [$\mu$m]        & $9.68$  & $9.68$  & $9.30$ & $9.29$ \\
+$\mu_{vx0}$ [$\mu$m/s]     & $2.70$  & $2.64$  & $2.48$ & $2.40$ \\
+$\mu_{vy0}$ [$\mu$m/s]     & $2.56$  & $2.50$  & $2.47$ & $2.41$ \\
+$\sigma_x$ [$\mu$m]        & $10.19$ & $10.19$ & $9.87$ & $9.88$ \\
+$\sigma_y$ [$\mu$m]        & $10.00$ & $9.99$  & $9.83$ & $9.82$ \\
+$\sigma_{vx}$ [$\mu$m/s]   & $8.92$  & $\mathbf{0.705}$ & $8.91$ & $\mathbf{0.670}$ \\
+$\sigma_{vy}$ [$\mu$m/s]   & $8.83$  & $\mathbf{0.691}$ & $8.97$ & $\mathbf{0.673}$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -381,17 +472,20 @@ the RMSE.
 
 \begin{table}[htbp]
 \centering
-\caption{Signal $(A_s,A_c)$ RMSE by method and atom count, $N=10$ independent runs.}
+\caption{Signal $(A_s,A_c)$ RMSE by method and atom count, in mrad
+($A_s,A_c$ are phase-modulation amplitudes: $\delta\phi_i(\beta)=A_s\sin(\cdot)+A_c\cos(\cdot)$
+is a phase, Eq.~\ref{eq:dphi}, so $A_s,A_c$ carry the same units), $N=10$
+independent runs.}
 \label{tab:beta-rmse}
 \begin{tabular}{lrrrr}
 \toprule
 & \multicolumn{2}{c}{$10^6$ atoms} & \multicolumn{2}{c}{$10^8$ atoms} \\
-Method & RMSE($A_s$) & RMSE($A_c$) & RMSE($A_s$) & RMSE($A_c$) \\
+Method & RMSE($A_s$) [mrad] & RMSE($A_c$) [mrad] & RMSE($A_s$) [mrad] & RMSE($A_c$) [mrad] \\
 \midrule
-Null              & 0.001412 & 0.000737 & 0.000641 & 0.001078 \\
-MAP-moments       & 0.001284 & 0.000636 & 0.000566 & 0.000936 \\
-Pixel-likelihood (best) & $\mathbf{0.000495}$ & $\mathbf{0.000321}$ & $\mathbf{0.000074}$ & $\mathbf{0.000086}$ \\
-Oracle            & 0.000468 & 0.000304 & 0.000032 & 0.000020 \\
+Null              & 1.412 & 0.737 & 0.641 & 1.078 \\
+MAP-moments       & 1.284 & 0.636 & 0.566 & 0.936 \\
+Pixel-likelihood (best) & $\mathbf{0.495}$ & $\mathbf{0.321}$ & $\mathbf{0.074}$ & $\mathbf{0.086}$ \\
+Oracle            & 0.468 & 0.304 & 0.032 & 0.020 \\
 \midrule
 Best / moments ratio & 0.386 & 0.505 & 0.131 & 0.092 \\
 Best / oracle ratio  & 1.058 & 1.056 & 2.31  & 4.30  \\
@@ -518,12 +612,12 @@ where any effect is seen at all):
 \begin{center}
 \begin{tabular}{lrr}
 \toprule
-Configuration & RMSE($\sigma_{vx}$) & RMSE($\sigma_{vy}$) \\
+Configuration & RMSE($\sigma_{vx}$) [$\mu$m/s] & RMSE($\sigma_{vy}$) [$\mu$m/s] \\
 \midrule
-bins=16, native range (baseline)  & $8.69\times10^{-7}$ & $8.60\times10^{-7}$ \\
-bins=32, native range             & $7.14\times10^{-7}$ & $6.63\times10^{-7}$ \\
-bins=16, tight range              & $7.25\times10^{-7}$ & $6.81\times10^{-7}$ \\
-bins=32, tight range (both)       & $6.99\times10^{-7}$ & $6.34\times10^{-7}$ \\
+bins=16, native range (baseline)  & $0.869$ & $0.860$ \\
+bins=32, native range             & $0.714$ & $0.663$ \\
+bins=16, tight range              & $0.725$ & $0.681$ \\
+bins=32, tight range (both)       & $0.699$ & $0.634$ \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -549,12 +643,12 @@ comparison:
 \begin{center}
 \begin{tabular}{lrr}
 \toprule
-Configuration & RMSE($\sigma_{vx}$) & RMSE($\sigma_{vy}$) \\
+Configuration & RMSE($\sigma_{vx}$) [$\mu$m/s] & RMSE($\sigma_{vy}$) [$\mu$m/s] \\
 \midrule
-bins=16, native range (baseline)  & $8.69\times10^{-7}$ & $8.60\times10^{-7}$ \\
-\textbf{bins=8, tight range}      & $\mathbf{9.55\times10^{-7}}$ & $\mathbf{9.62\times10^{-7}}$ \\
-bins=16, tight range              & $7.25\times10^{-7}$ & $6.81\times10^{-7}$ \\
-bins=32, tight range              & $6.99\times10^{-7}$ & $6.34\times10^{-7}$ \\
+bins=16, native range (baseline)  & $0.869$ & $0.860$ \\
+\textbf{bins=8, tight range}      & $\mathbf{0.955}$ & $\mathbf{0.962}$ \\
+bins=16, tight range              & $0.725$ & $0.681$ \\
+bins=32, tight range              & $0.699$ & $0.634$ \\
 \bottomrule
 \end{tabular}
 \end{center}
