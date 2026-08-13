@@ -92,6 +92,7 @@ Options
 """
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -117,6 +118,62 @@ Z0_VALUES = {0: 'Z0', 100: 'Z100'}
 def _make_surrogate(psmap_dir, z0, psmap_tag='CONFOCAL_FINE'):
     fname = os.path.join(psmap_dir, f'PSGRID4D_{psmap_tag}_Z{z0}.h5')
     return PSMAPSurrogate(load_psmap(fname), t_det=T_DET, use_gpu=True)
+
+
+def _psmap_fingerprint(psmap_dir, psmap_tag):
+    """Cheap (size, mtime) fingerprint per z0 source file -- enough to catch
+    'same --psmap_tag string, but the underlying PSGRID4D was regenerated
+    since', not a content hash (the files are ~100+ MB; hashing them on every
+    invocation would make this check itself slow)."""
+    fp = {}
+    for z0 in Z0_VALUES:
+        fname = os.path.join(psmap_dir, f'PSGRID4D_{psmap_tag}_Z{z0}.h5')
+        st = os.stat(fname)
+        fp[str(z0)] = {'size': st.st_size, 'mtime': st.st_mtime}
+    return fp
+
+
+def _check_or_write_generation_config(run_dir, psmap_dir, args):
+    """Guard against silently overwriting a run directory that was generated
+    under a different PSMAP/wavefront (or otherwise incompatible config).
+
+    This is exactly the failure mode that motivated it: two invocations
+    whose --run_name happened to collide (whether auto-generated from cloud
+    params that don't mention --psmap_tag, or an explicitly reused
+    --run_name) will, without this check, silently overwrite each other's
+    run_NNN/{Z0,Z100}/data_IMG.h5 in place -- h5py's 'w' mode truncates with
+    no trash/undo, so by the time anyone notices, the previous data is gone.
+    Refusing to proceed here is cheap; recovering after the fact often isn't.
+    """
+    config_path = os.path.join(run_dir, '_generation_config.json')
+    current = {
+        'psmap_tag': args.psmap_tag,
+        'psmap_fingerprint': _psmap_fingerprint(psmap_dir, args.psmap_tag),
+        'n_shots': args.n_shots,
+        'n_atoms': args.n_atoms,
+        'image_res': args.image_res,
+    }
+    if not os.path.exists(config_path):
+        os.makedirs(run_dir, exist_ok=True)
+        with open(config_path, 'w') as f:
+            json.dump(current, f, indent=2)
+        return
+
+    with open(config_path) as f:
+        previous = json.load(f)
+
+    mismatches = [k for k in current if previous.get(k) != current[k]]
+    if mismatches:
+        print(f'\nABORTING: {run_dir}\nwas previously generated with a different config '
+              f'(recorded in _generation_config.json) than this invocation is about to use. '
+              f'Mismatched key(s): {", ".join(mismatches)}.\n'
+              f'  previous : { {k: previous.get(k) for k in mismatches} }\n'
+              f'  current  : { {k: current[k] for k in mismatches} }\n'
+              f'Continuing would silently overwrite run_NNN data generated under the previous '
+              f'config with no way to recover it. Use a different --run_name (or --psmap_tag) '
+              f'for this config, or delete _generation_config.json if you are deliberately '
+              f're-generating this exact directory from scratch.', file=sys.stderr)
+        sys.exit(1)
 
 
 def _sample_phi0(rng, n_shots, mode):
@@ -380,6 +437,14 @@ def main():
         if args.linear_phase_kappa != 0.0:
             args.run_name += (f'_kappa{args.linear_phase_kappa:.2e}'
                               f'_{args.linear_phase_site}')
+        # psmap_tag selects which PSGRID4D (wavefront) the shots are drawn
+        # from and is NOT reflected anywhere else in this name -- without it,
+        # two runs that differ only in --psmap_tag (e.g. the default
+        # analytic CONFOCAL_FINE beam vs. an arbitrary-wavefront PSMAP built
+        # via phase_space_grids.py) land in the same directory and silently
+        # overwrite each other's run_NNN/{Z0,Z100}/data_IMG.h5 in place, with
+        # no warning and no way to recover the overwritten data afterwards.
+        args.run_name += f'_psmap{args.psmap_tag}'
 
     seed_seq    = np.random.SeedSequence(args.seed)
     n_total     = args.run_start + args.n_runs
@@ -412,6 +477,8 @@ def main():
               f'  site={args.linear_phase_site}'
               f'  coordinate={args.linear_phase_coordinate}')
     print()
+
+    _check_or_write_generation_config(os.path.join(data_root, args.run_name), psmap_dir, args)
 
     print('Loading surrogates …', end=' ', flush=True)
     t0 = time.perf_counter()
