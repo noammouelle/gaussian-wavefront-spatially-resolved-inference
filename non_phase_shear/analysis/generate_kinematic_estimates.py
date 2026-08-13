@@ -125,15 +125,69 @@ def phi_marginal_nll(theta, acs, n_g, n_e, phi_grid, dphi):
     return -logsumexp(-nll_m, b=dphi)
 
 
+def phi_marginal_nll_and_grad(theta, acs, n_g, n_e, phi_grid, dphi):
+    """Same value as phi_marginal_nll, plus its exact (8,) analytic gradient
+    w.r.t. theta.
+
+    The marginal NLL is L(theta) = -log sum_k dphi*exp(-g_k(theta)), where
+    g_k(theta) is the (per-phi-grid-point) Poisson NLL already computed in
+    phi_marginal_nll. By the standard marginal-likelihood gradient identity
+    (differentiate the log-sum-exp, or equivalently Fisher's identity for a
+    mixture): dL/dtheta = sum_k w_k * dg_k/dtheta, where w_k = dphi*exp(-g_k)/Z
+    is exactly the phi-posterior weight the forward pass already computes en
+    route to L(theta) (the same softmax that logsumexp evaluates), and
+    dg_k/dtheta is the per-phi-point Poisson-NLL gradient -- the same
+    computation pixel_acs_grad's dbase already gives, one phi_k at a time, in
+    generate_kinematic_estimates.py's sibling code (see
+    joint_profile_inference.py's _ai_nll_and_grad_analytic for the validated
+    single-phi version this generalises via a phi-grid-weighted average).
+    Used in place of phi_marginal_nll + scipy finite-differencing (fit_theta_best's
+    previous behaviour): with jac=True, L-BFGS-B needs ~1 evaluation per
+    iteration instead of ~9 (8 theta components + 1 base call), since it no
+    longer has to finite-difference the gradient itself.
+    """
+    base, dbase = pag.pixel_acs_and_grad(acs, theta, _H_THETA)
+    A_g, Cc_g, Cs_g, A_e, Cc_e, Cs_e = [b.get() if hasattr(b, 'get') else b for b in base]
+    c = np.cos(phi_grid); s = np.sin(phi_grid)
+    I_g = A_g[None, :] + Cc_g[None, :]*c[:, None] + Cs_g[None, :]*s[:, None]
+    I_e = A_e[None, :] + Cc_e[None, :]*c[:, None] + Cs_e[None, :]*s[:, None]
+    n_tot = float(n_g.sum() + n_e.sum())
+    L = n_tot / np.maximum((I_g + I_e).sum(axis=1), crb.EPS)
+    mu_g = L[:, None] * np.maximum(I_g, crb.EPS)
+    mu_e = L[:, None] * np.maximum(I_e, crb.EPS)
+    nll_m = (mu_g - n_g[None, :]*np.log(mu_g)).sum(axis=1) + \
+            (mu_e - n_e[None, :]*np.log(mu_e)).sum(axis=1)
+    marg_nll = -logsumexp(-nll_m, b=dphi)
+
+    # phi-posterior weights w_k = dphi*exp(-nll_m_k)/Z, computed the same
+    # numerically-stable way logsumexp does internally (exp(marg_nll) = 1/Z).
+    w = dphi * np.exp(marg_nll - nll_m)   # (M,), sums to ~1
+
+    w_g = 1.0 - n_g[None, :] / mu_g   # (M, n_bins)
+    w_e = 1.0 - n_e[None, :] / mu_e
+    grad = np.empty(8)
+    for j in range(8):
+        dA_g, dCc_g, dCs_g, dA_e, dCc_e, dCs_e = dbase[j]
+        dI_g = dA_g[None, :] + dCc_g[None, :]*c[:, None] + dCs_g[None, :]*s[:, None]
+        dI_e = dA_e[None, :] + dCc_e[None, :]*c[:, None] + dCs_e[None, :]*s[:, None]
+        dmu_g = L[:, None] * dI_g
+        dmu_e = L[:, None] * dI_e
+        dnll_dtheta_j_per_k = (dmu_g * w_g).sum(axis=1) + (dmu_e * w_e).sum(axis=1)   # (M,)
+        grad[j] = float(np.sum(w * dnll_dtheta_j_per_k))
+    return marg_nll, grad
+
+
 PHI_GRID = np.linspace(0, 2*np.pi, M_PHI, endpoint=False)
 DPHI = 2*np.pi / M_PHI
 
 
 def fit_theta_best(acs, n_g, n_e):
-    def neg_logL_prior(theta):
-        mnll = phi_marginal_nll(theta, acs, n_g, n_e, PHI_GRID, DPHI)
-        return mnll + 0.5 * float(np.sum(((theta - prior_mean) / prior_std) ** 2))
-    res = minimize(neg_logL_prior, prior_mean.copy(), method='L-BFGS-B', options={'maxiter': 200, 'eps': 1e-8})
+    def neg_logL_prior_and_grad(theta):
+        mnll, mgrad = phi_marginal_nll_and_grad(theta, acs, n_g, n_e, PHI_GRID, DPHI)
+        d = (theta - prior_mean) / prior_std
+        return mnll + 0.5 * float(np.sum(d ** 2)), mgrad + d / prior_std
+    res = minimize(neg_logL_prior_and_grad, prior_mean.copy(), jac=True,
+                    method='L-BFGS-B', options={'maxiter': 200})
     return res.x
 
 
