@@ -1,15 +1,18 @@
 """
-Generates the figures and tables for the kinematic-estimation paper:
+Generates the figures and tables for the kinematic-estimation comparison:
   - Residual plots: theta_hat - theta_true, all 8 kinematic params,
-    4 methods x 2 atom counts, pooled across all runs/shots.
-  - Scatter plots: (As_hat, Ac_hat) per run, 4 methods x 2 atom counts.
-  - RMSE tables (kinematic params + beta), printed as both text and LaTeX.
+    4 methods x len(labels) datasets, pooled across all runs/shots.
+  - Scatter plots: (As_hat, Ac_hat) per run, 4 methods x len(labels) datasets.
+  - RMSE tables (kinematic params + beta), printed as text.
 
-Usage: python make_paper_figures.py
-Reads: results/kinematic_estimates_{1e6,1e8}_N10_shots50.json
-       results/beta_fits_{1e6,1e8}_N10_shots50.json
-Writes: notes/figures/*.png, results/paper_tables.tex
+Usage: python make_paper_figures.py [labels...] [--n_runs N] [--n_shots N]
+Defaults to labels 1e6 1e8, n_runs=10, n_shots=50 (the originally-reproduced
+comparison) if no args given. labels must match --label used in
+generate_kinematic_estimates.py / beta_fits_from_kinematics.py.
+Reads: results/{kinematic_estimates,beta_fits}_<label>_N<n_runs>_shots<n_shots>.json
+Writes: figures/*.png, results/paper_tables.txt
 """
+import argparse
 import json
 from pathlib import Path
 import numpy as np
@@ -21,6 +24,13 @@ REPO = Path(__file__).resolve().parent.parent
 FIG_DIR = REPO / 'figures'
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
+p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+p.add_argument('labels', nargs='*', default=['1e6', '1e8'],
+                help='dataset labels to compare (default: 1e6 1e8)')
+p.add_argument('--n_runs', type=int, default=10)
+p.add_argument('--n_shots', type=int, default=50)
+args = p.parse_args()
+
 THETA_NAMES = ['mu_x0', 'mu_y0', 'mu_vx0', 'mu_vy0', 'sigma_x', 'sigma_y', 'sigma_vx', 'sigma_vy']
 THETA_LABELS = [r'$\mu_{x0}$', r'$\mu_{y0}$', r'$\mu_{vx0}$', r'$\mu_{vy0}$',
                 r'$\sigma_x$', r'$\sigma_y$', r'$\sigma_{vx}$', r'$\sigma_{vy}$']
@@ -28,9 +38,10 @@ METHODS = ['null', 'moments', 'best', 'oracle']
 METHOD_LABELS = {'null': 'Null (prior only)', 'moments': 'MAP-moments (Kalman)',
                   'best': 'Pixel-likelihood (bins=32, tight range)', 'oracle': 'Oracle (true $\\theta$)'}
 METHOD_COLORS = {'null': 'gray', 'moments': 'tab:orange', 'best': 'tab:blue', 'oracle': 'tab:green'}
-DATASETS = ['1e6', '1e8']
-DATASET_LABELS = {'1e6': r'$10^6$ atoms', '1e8': r'$10^8$ atoms'}
-N_RUNS, N_SHOTS = 10, 50
+DATASETS = args.labels
+_PRETTY = {'1e6': r'$10^6$ atoms', '1e8': r'$10^8$ atoms'}   # known nice labels; anything else displays as-is
+DATASET_LABELS = {d: _PRETTY.get(d, d) for d in DATASETS}
+N_RUNS, N_SHOTS = args.n_runs, args.n_shots
 
 
 def load_kinematics(dataset):

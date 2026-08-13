@@ -104,6 +104,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  '..', '..', '..', 'local', 'aispy'))
 from aispy.psmap import load_psmap, PSMAPSurrogate
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'helpers'))
+from run_manifest import log_run
+
 # ── detection time (must match phase_space_grids.py: 4*T - 0.2) ──────────────
 T_DET = 3.8   # s
 
@@ -432,6 +435,14 @@ def main():
     total = time.perf_counter() - t_global
     print(f'All {args.n_runs} run(s) done.  Total wall time: {_fmt_time(total)}'
           f'  ({_fmt_time(total / args.n_runs)} / run)')
+
+    log_run(os.path.join(script_dir, '..'), 'generate_data', args.run_name,
+            n_runs=args.n_runs, run_start=args.run_start, n_shots=args.n_shots,
+            n_atoms=args.n_atoms, seed=args.seed, phi0_mode=args.phi0_mode,
+            signal_amp=args.signal_amp, signal_freq=args.signal_freq,
+            signal_phase=args.signal_phase, linear_phase_kappa=args.linear_phase_kappa,
+            linear_phase_site=args.linear_phase_site, image_res=args.image_res,
+            data_dir=os.path.join('data', args.run_name))
 
 
 if __name__ == '__main__':

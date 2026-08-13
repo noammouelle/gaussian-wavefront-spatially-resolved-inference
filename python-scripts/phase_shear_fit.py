@@ -44,6 +44,7 @@ from scipy.optimize import minimize
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / 'helpers'))
 from helpers import ImageShotDataset   # noqa
+from run_manifest import log_run       # noqa
 
 DEFAULT_DATASET = (
     'R20_N200_A1000000_muXStd10.0um_muVxStd10.0um_sigX100um_sigVx100um_'
@@ -341,6 +342,12 @@ def main():
         with open(out_path, 'wb') as fh:
             pickle.dump(payload, fh)
         log.info('Saved -> %s', out_path)
+
+    label = out_dir.name if out_dir is not None else Path(args.data_dir).parent.name
+    log_run(REPO, 'phase_shear_fit', label,
+            dataset=str(args.data_root or args.data_dir), n_runs=len(run_dirs),
+            max_shots=args.max_shots, bins=args.bins,
+            output=str(out_dir if out_dir is not None else out_path))
 
 
 if __name__ == '__main__':

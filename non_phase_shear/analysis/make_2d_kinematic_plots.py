@@ -9,8 +9,11 @@ sigma_vx) should show visible correlation for 'moments' that is absent (or
 much weaker) for 'best' (which does not go through that reduced-moment
 bottleneck at all).
 
-Usage: python make_2d_kinematic_plots.py
+Usage: python make_2d_kinematic_plots.py [labels...] [--n_runs N] [--n_shots N]
+Defaults to labels 1e6 1e8, n_runs=10, n_shots=50 if no args given. labels
+must match --label used in generate_kinematic_estimates.py.
 """
+import argparse
 import json
 from pathlib import Path
 import numpy as np
@@ -23,6 +26,13 @@ REPO = Path(__file__).resolve().parent.parent
 FIG_DIR = REPO / 'figures'
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
+p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+p.add_argument('labels', nargs='*', default=['1e6', '1e8'],
+                help='dataset labels to compare (default: 1e6 1e8)')
+p.add_argument('--n_runs', type=int, default=10)
+p.add_argument('--n_shots', type=int, default=50)
+args = p.parse_args()
+
 THETA_NAMES = ['mu_x0', 'mu_y0', 'mu_vx0', 'mu_vy0', 'sigma_x', 'sigma_y', 'sigma_vx', 'sigma_vy']
 THETA_LABELS = {n: l for n, l in zip(THETA_NAMES,
     [r'$\mu_{x0}$', r'$\mu_{y0}$', r'$\mu_{vx0}$', r'$\mu_{vy0}$',
@@ -31,9 +41,10 @@ METHODS = ['null', 'moments', 'best']   # oracle is a delta function at 0, not u
 METHOD_LABELS = {'null': 'Null (prior only)', 'moments': 'MAP-moments (Kalman)',
                   'best': 'Pixel-likelihood (bins=32, tight range)'}
 METHOD_COLORS = {'null': 'gray', 'moments': 'tab:orange', 'best': 'tab:blue'}
-DATASETS = ['1e6', '1e8']
-DATASET_LABELS = {'1e6': r'$10^6$ atoms', '1e8': r'$10^8$ atoms'}
-N_RUNS, N_SHOTS = 10, 50
+DATASETS = args.labels
+_PRETTY = {'1e6': r'$10^6$ atoms', '1e8': r'$10^8$ atoms'}   # known nice labels; anything else displays as-is
+DATASET_LABELS = {d: _PRETTY.get(d, d) for d in DATASETS}
+N_RUNS, N_SHOTS = args.n_runs, args.n_shots
 
 # Pairs to plot: the ones physically coupled by the moment method's
 # detection-plane-variance degeneracy (V_xf/V_yf mixing mean/variance
