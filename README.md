@@ -444,6 +444,17 @@ fits a fringe model directly on images and never touches the PSMAP at all
 (see Section 4b), so it's unaffected by which PSMAP a dataset was generated
 under and needs no flag here.
 
+**Pick a `--label` you'll actually remember which wavefront it means** --
+`my_wavefront` above is a placeholder, not a real convention. `--label`
+is free text with no automatic connection to `--psmap_tag`/`--dataset`; if
+you reuse a label from an earlier, different wavefront (e.g. the plain
+`1e6`/`1e8` labels Section 4b's default pipeline uses), `generate_kinematic_estimates.py`
+and `beta_fits_from_kinematics.py` will now **abort** rather than silently
+overwrite that earlier wavefront's results -- so forgetting isn't
+catastrophic anymore, but you'll still have to stop and pick a new one
+when it happens. Something like `1e6_<wavefront tag>` (e.g.
+`1e6_confocal_random_zernike`) keeps it both distinct and legible later.
+
 ## 3. Reproduce existing numbers and figures (fast path, no data/GPU needed)
 
 ```bash
@@ -542,6 +553,14 @@ cd non_phase_shear/analysis
 python generate_kinematic_estimates.py <dataset_dir> <n_runs> <n_shots> --label <short_tag>
 python beta_fits_from_kinematics.py    <dataset_dir> <n_runs> <n_shots> --label <short_tag>
 ```
+
+**Choose `<short_tag>` to mean something** -- it's free text, not derived
+from `<dataset_dir>`/`--psmap_tag`. A reused label against a different
+`<dataset_dir>`/`--psmap_tag` now aborts instead of silently overwriting
+the previous run's `results/*.json` (and downstream figures/tables), but
+you still have to notice and pick a new one -- a label like `1e6_<wavefront>`
+saves that trip later. See Section 2b's "arbitrary wavefronts" walkthrough
+for a worked example.
 
 - `generate_kinematic_estimates.py` fits per-shot theta under all 4 methods
   (null/moments/best/oracle) for both Z0 and Z100, and also stashes the raw
