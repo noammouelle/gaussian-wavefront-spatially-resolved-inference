@@ -90,6 +90,8 @@ from aisoptics import ParaxialPropagator, AngularSpectrumPropagator
 from aisoptics.fields.perturbations import (
     FourierModePerturbation, FourierPerturbation, ZernikeAberration, ZernikeSum,
 )
+from aisoptics.grids.field_grid import FieldGrid
+from aisoptics.io.metadata import decode_metadata
 
 DEFAULT_WAVELENGTH = 2 * np.pi / float(AISPY_KZ)   # matches aispy's Sr-87 clock kz
 DEFAULT_ZR = 450.085                                # m, matches phase_space_grids.py
@@ -161,6 +163,26 @@ def random_zernike_terms(n, rms, beam_radius, min_noll=4, max_noll=20, split='eq
     print(f'random Zernike terms (target rms={rms:g}, achieved={achieved_rms:.6g}): ' +
           ', '.join(f'noll={t.noll_index} amp={t.amplitude:.6g}' for t in terms))
     return terms
+
+
+def load_aispp_field(path):
+    """Load a field this script wrote (AISPPExporter's flattened x/y/z +
+    phase/amplitude HDF5 layout) back into an aisoptics.FieldGrid -- e.g.
+    for visualising exactly what's on disk (what ais++'s wtype=interpolated
+    will actually read) rather than re-deriving it analytically. Used by
+    optics/notebooks/wavefront_visualization.ipynb's LOAD_FROM_FILE mode.
+    """
+    import h5py
+    with h5py.File(path, 'r') as f:
+        x, y, z = f['x'][:], f['y'][:], f['z'][:]
+        metadata = decode_metadata(f.attrs.get('metadata'))
+        shape = tuple(metadata.get('array_shape_before_flattening', (len(x), len(y), len(z))))
+        order = metadata.get('flatten_order', 'C')
+        phase = f['phase'][:].reshape(shape, order=order)
+        amplitude = f['amplitude'][:].reshape(shape, order=order)
+    grid = GridSpec(x=x, y=y, z=z)
+    complex_values = amplitude * np.exp(1j * phase)
+    return FieldGrid(grid, complex_values=complex_values, backend=Backend('numpy'))
 
 
 def parse_zernike_random(spec, beam_radius):

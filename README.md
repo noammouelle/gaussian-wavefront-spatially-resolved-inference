@@ -293,10 +293,17 @@ Then look at it:
 ```bash
 jupyter notebook optics/notebooks/wavefront_visualization.ipynb
 ```
-Edit the `MODES`/`ZTERMS`/grid config cell to match what you generated.
-Shows phase + amplitude at the mirror plane for both beams, the isolated
-aberration (up minus down, checked against the analytic formula), a 3D
-surface, and the propagation-vs-distance demonstration described above.
+Loads the `_down.h5`/`_up.h5` files directly (exactly what `ais++` will
+read, not a re-derivation) -- just set `DOWN_FILE`/`UP_FILE` in the config
+cell to the pair you generated. Optionally set `REFERENCE_UP_FILE` to a
+second, unaberrated up-beam file (same grid, no `--mode`/`--zernike`) to
+isolate the aberration cleanly and get the propagation-vs-distance
+residual plot; without it the notebook still runs, just showing raw phase
+instead of an isolated aberration. Shows phase + amplitude at the mirror
+plane (nearest loaded z to `MIRROR_Z`) for both beams, the isolated
+aberration, a 3D surface, and the propagation-vs-distance demonstration
+described above (all read straight off the loaded z-grid, since the file
+already covers the full range it was generated with).
 
 **z-range matters**: the grid must cover wherever the atom actually is when
 a pulse fires. `phase_space_grids.py` launches atoms from `z0=0` (bottom
@@ -351,10 +358,11 @@ python convergence_check.py --zernike_random n=5 rms=0.1 seed=42 \
 
 jupyter notebook optics/notebooks/wavefront_visualization.ipynb
 ```
-For the notebook, copy the printed `noll=... amp=...` pairs into its
-`ZTERMS` cell as explicit `ZernikeAberration(...)` entries (the notebook
-doesn't take CLI args) -- that also makes the visualised run exactly
-reproducible rather than tied to `aisoptics`'s RNG state.
+For the notebook, just point `DOWN_FILE`/`UP_FILE` at `confocal_random5_{down,up}.h5`
+(and `REFERENCE_UP_FILE` at a flat-mirror run's `_up.h5` on the same grid,
+if you want the isolated-aberration/propagation-residual plots rather than
+raw phase) -- no need to copy the printed `noll=... amp=...` pairs in by
+hand, since the notebook loads whatever was actually written to disk.
 
 ### Step 2: build the PSMAP (`phase_space_grids.py`)
 
