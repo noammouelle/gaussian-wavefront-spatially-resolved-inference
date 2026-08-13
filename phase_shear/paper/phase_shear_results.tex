@@ -1,0 +1,113 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{graphicx}
+
+\geometry{margin=2.5cm}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Phase-Shear MLE: Systematic-Bias Correction Results\\
+  \large 1e6 vs.\ 1e8 Atoms, Fitted-Feature vs.\ Oracle Regression}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setup}
+
+For each shot, \code{phase\_shear\_fit.py} fits a Gaussian $\times$ fringe
+model directly to the ground-state port image (a direct image-space MLE,
+independent of the PSMAP-based \code{map\_inference.py} pipeline) at both
+Z0 and Z100, giving a per-shot phase estimate $\phi_0^{\rm fit}$ together
+with fitted cloud-shape parameters ($\mu_x,\mu_y,\sigma_x,\sigma_y,
+\kappa_x,\kappa_y,\gamma_x,\gamma_y$). $\phi_0^{\rm fit}$ is dominated by
+the random per-shot laser phase (std $\sim\pi$), but carries a smaller
+systematic offset that depends on the cloud's actual position/shape on the
+fringe pattern (a wavefront-averaging effect). The differential
+$\Delta\phi = \phi_0^{\rm fit,Z100}-\phi_0^{\rm fit,Z0}$ cancels the shared
+random laser phase (std drops from $\sim1.7$--$1.9$~rad per AI to
+$\sim70$~mrad differential) and isolates the signal
+$\delta\phi_i=A_s\sin(2\pi f i)+A_c\cos(2\pi f i)$, but the systematic does
+not fully cancel and must be regressed out.
+
+Two datasets were run apples-to-apples: the \code{..\_kappa3.14e+04\_both}
+runs (linear phase gradient applied at both AIs) at $10^6$ and $10^8$
+atoms/shot, 20 runs $\times$ 20 shots each, same true signal
+($A_s=0.0878$, $A_c=0.0479$, $f=0.3$). Sample size was kept small
+(20 shots/run) for fast turnaround; a degree-1 (linear) polynomial model
+was used for the systematic-bias regression for numerical stability at
+this sample size (a full 16-feature degree-2 model overfits badly at
+$N\approx380$, driving out-of-sample $R^2$ negative).
+
+Two correction variants are compared:
+\begin{itemize}
+  \item \textbf{Fitted-feature}: regress $\Delta\phi$ on the
+    \emph{fitted} cloud-shear parameters (the practically available
+    correction). Reported both in-sample (IS) and via leave-one-run-out
+    cross-validation (OOS).
+  \item \textbf{Oracle}: regress $\Delta\phi$ on the \emph{true} simulated
+    initial kinematics instead of the fitted parameters -- i.e.\ the
+    idealised case where the cloud's real position/width is known exactly,
+    with zero measurement error. Evaluated in-sample only, since the
+    question this answers is ``how good is the correction if the true
+    parameters are already known,'' not generalisation.
+\end{itemize}
+
+\section{Results}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llrr}
+\toprule
+Dataset & Estimator & Residual std [mrad] & $\beta$ RMSE [mrad] \\
+\midrule
+\multirow[t]{4}{*}{$10^6$ atoms}
+  & raw (uncorrected)             & 13.84 & 5.35 \\
+  & fitted-feature (in-sample)    & 6.65  & 2.63 \\
+  & fitted-feature (leave-one-run-out) & 7.22 & --- \\
+  & oracle, true kinematics (in-sample) & 7.07 & 2.64 \\
+\midrule
+\multirow[t]{4}{*}{$10^8$ atoms}
+  & raw (uncorrected)             & 13.51 & 5.35 \\
+  & fitted-feature (in-sample)    & 1.18  & 0.46 \\
+  & fitted-feature (leave-one-run-out) & 1.85 & --- \\
+  & oracle, true kinematics (in-sample) & 1.08  & 0.33 \\
+\bottomrule
+\end{tabular}
+\caption{Differential-phase residual std (std of $\hat{\delta\phi}-\delta\phi_{\rm true}$,
+pooled over all shots $\times$ runs) and per-run $(A_s,A_c)$ recovery RMSE,
+before and after systematic-bias correction, for the fitted-feature and
+oracle (true-kinematics) regressions. $\beta$ RMSE is the joint
+RMS error over $A_s,A_c$ across the 20 per-run signal fits; not defined
+for the leave-one-run-out row (only the differential-phase residual was
+cross-validated, not a full per-run refit).}
+\end{table}
+
+\section{Discussion}
+
+At $10^8$ atoms the correction is far more effective (raw
+13.5~mrad~$\to$~1.1--1.2~mrad, an order of magnitude) than at $10^6$ atoms
+(13.8~mrad~$\to$~6.6--7.1~mrad, roughly $2\times$), consistent with the
+image-space MLE localising the cloud shape and hence the systematic far
+more precisely at higher photon count. In both regimes the fitted-feature
+and oracle corrections land within statistical noise of each other
+in-sample (1e6: 6.65 vs.\ 7.07~mrad; 1e8: 1.18 vs.\ 1.08~mrad) --
+indicating the fitted cloud-shape estimates are already close to
+noise-free proxies for the true kinematics at this signal-to-noise level,
+so there is little room left for an oracle to improve on the practically
+available correction. The fitted-feature correction's out-of-sample
+degradation (leave-one-run-out vs.\ in-sample: $+0.6$~mrad at 1e6,
+$+0.7$~mrad at 1e8) reflects the usual bias/variance cost of estimating
+the correction from finite data rather than a fixed model.
+
+\end{document}

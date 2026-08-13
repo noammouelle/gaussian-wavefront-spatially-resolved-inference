@@ -1,0 +1,19 @@
+# Both pipelines (non_phase_shear/ and phase_shear/) were run under a single
+# conda env with aispy installed editable (see README.md "aispy dependency").
+# Python 3.14.3 here; should work with any recent 3.11+.
+numpy==2.4.3
+scipy==1.17.1
+h5py==3.16.0
+matplotlib==3.10.8
+pandas==3.0.1
+scikit-learn==1.8.0
+jupyter
+
+# GPU acceleration (optional but strongly recommended -- map_inference.py,
+# pixel_acs_grad*.py, and generate_data.py use cupy when available and fall
+# back to plain numpy otherwise; the pixel-likelihood ("best") method in
+# non_phase_shear/ is orders of magnitude slower on CPU). Requires an
+# NVIDIA GPU + CUDA 13.x driver.
+# If your CUDA version differs, install the matching cupy-cudaXXx wheel
+# instead -- see https://docs.cupy.dev/en/stable/install.html
+cupy-cuda13x==14.0.1
