@@ -30,6 +30,11 @@ p.add_argument('dataset', help='dataset directory name under data/ (the run tag)
 p.add_argument('n_runs', type=int)
 p.add_argument('n_shots', type=int)
 p.add_argument('--label', default=None, help='short tag matching what generate_kinematic_estimates.py used (default: dataset dir name)')
+p.add_argument('--psmap_tag', default='CONFOCAL_FINE',
+                help="PSMAP tag: reads output-files/PSGRID4D_<tag>_Z{0,100}.h5 -- "
+                     "should match the PSMAP the dataset was actually generated "
+                     "under (generate_data.py --psmap_tag), not necessarily what "
+                     "generate_kinematic_estimates.py used for theta fitting")
 args = p.parse_args()
 
 N_RUNS = args.n_runs
@@ -49,8 +54,8 @@ print(f'Loaded {len(run_names)} runs from {in_path}', flush=True)
 data_root = REPO / 'data' / args.dataset
 run_dir0 = sorted(data_root.glob('run_*'))[0]
 
-psmap_z0 = mi.load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z0.h5'))
-psmap_z100 = mi.load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z100.h5'))
+psmap_z0 = mi.load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{args.psmap_tag}_Z0.h5'))
+psmap_z100 = mi.load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{args.psmap_tag}_Z100.h5'))
 _ds_tmp = ImageShotDataset(str(run_dir0 / 'Z0' / 'data_IMG.h5'))
 edges = np.linspace(-_ds_tmp.half_range, _ds_tmp.half_range, BINS_BETA + 1)
 sur_z0 = mi.PSMAPSurrogate(psmap_z0, mi.DEFAULT_T_DET, use_gpu=mi.USE_GPU)
@@ -117,5 +122,6 @@ for method in METHODS:
     print(f'  {method:10s}: RMSE(As)={rmse[0]:.6f}  RMSE(Ac)={rmse[1]:.6f}')
 
 log_run(REPO, 'beta_fits', LABEL, dataset=args.dataset, n_runs=N_RUNS,
-        n_shots=N_SHOTS, bins_beta=BINS_BETA, gh_order=GH_ORDER, output=str(out_path))
+        n_shots=N_SHOTS, bins_beta=BINS_BETA, gh_order=GH_ORDER,
+        psmap_tag=args.psmap_tag, output=str(out_path))
 print('DONE')

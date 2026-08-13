@@ -36,6 +36,10 @@ p.add_argument('dataset', help='dataset directory name under data/ (the run tag)
 p.add_argument('n_runs', type=int)
 p.add_argument('n_shots', type=int)
 p.add_argument('--label', default=None, help='short tag for output filenames (default: dataset dir name)')
+p.add_argument('--psmap_tag', default='CONFOCAL_FINE',
+                help="PSMAP tag: reads output-files/PSGRID4D_<tag>_Z{0,100}.h5 "
+                     "(default: the analytic confocal beam; use a tag from "
+                     "phase_space_grids.py --tag for an arbitrary-wavefront PSMAP)")
 args = p.parse_args()
 
 N_RUNS = args.n_runs
@@ -57,8 +61,8 @@ assert run_dirs, f'no run_* dirs found under {data_root}'
 
 # --- best-config (pixel-likelihood, bins=32, tight range) evaluators ---
 edges_tight = np.linspace(-TIGHT_HALF_RANGE, TIGHT_HALF_RANGE, BINS_BEST + 1)
-psmap_z0 = mi.load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z0.h5'))
-psmap_z100 = mi.load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z100.h5'))
+psmap_z0 = mi.load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{args.psmap_tag}_Z0.h5'))
+psmap_z100 = mi.load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{args.psmap_tag}_Z100.h5'))
 sur_z0 = mi.PSMAPSurrogate(psmap_z0, mi.DEFAULT_T_DET, use_gpu=mi.USE_GPU)
 sur_z100 = mi.PSMAPSurrogate(psmap_z100, mi.DEFAULT_T_DET, use_gpu=mi.USE_GPU)
 base_z0_tight = SurrogatePixelACS(sur_z0, mi.DEFAULT_T_DET, edges_tight, edges_tight, n_quad=1)
@@ -191,5 +195,5 @@ for run_dir in run_dirs:
 print(f'Saved to {out_path}')
 log_run(REPO, 'kinematic_estimates', LABEL, dataset=args.dataset,
         n_runs=N_RUNS, n_shots=N_SHOTS, bins_best=BINS_BEST,
-        tight_half_range=TIGHT_HALF_RANGE, output=str(out_path))
+        tight_half_range=TIGHT_HALF_RANGE, psmap_tag=args.psmap_tag, output=str(out_path))
 print('DONE')

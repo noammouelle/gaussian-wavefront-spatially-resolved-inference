@@ -114,8 +114,8 @@ T_DET = 3.8   # s
 Z0_VALUES = {0: 'Z0', 100: 'Z100'}
 
 
-def _make_surrogate(psmap_dir, z0):
-    fname = os.path.join(psmap_dir, f'PSGRID4D_CONFOCAL_FINE_Z{z0}.h5')
+def _make_surrogate(psmap_dir, z0, psmap_tag='CONFOCAL_FINE'):
+    fname = os.path.join(psmap_dir, f'PSGRID4D_{psmap_tag}_Z{z0}.h5')
     return PSMAPSurrogate(load_psmap(fname), t_det=T_DET, use_gpu=True)
 
 
@@ -351,6 +351,10 @@ def main():
     p.add_argument('--linear_phase_site', choices=['Z0', 'Z100', 'both'],
                    default='both')
     p.add_argument('--linear_phase_coordinate', choices=['xf'], default='xf')
+    p.add_argument('--psmap_tag', type=str, default='CONFOCAL_FINE',
+                   help="PSMAP tag: reads output-files/PSGRID4D_<tag>_Z{0,100}.h5 "
+                        "(default: the analytic confocal beam; use a tag from "
+                        "phase_space_grids.py --tag for an arbitrary-wavefront PSMAP)")
 
     args = p.parse_args()
 
@@ -411,7 +415,7 @@ def main():
 
     print('Loading surrogates …', end=' ', flush=True)
     t0 = time.perf_counter()
-    surrogates = {z0: _make_surrogate(psmap_dir, z0) for z0 in Z0_VALUES}
+    surrogates = {z0: _make_surrogate(psmap_dir, z0, args.psmap_tag) for z0 in Z0_VALUES}
     print(f'done  ({_fmt_time(time.perf_counter() - t0)})\n')
 
     t_global   = time.perf_counter()
@@ -442,7 +446,7 @@ def main():
             signal_amp=args.signal_amp, signal_freq=args.signal_freq,
             signal_phase=args.signal_phase, linear_phase_kappa=args.linear_phase_kappa,
             linear_phase_site=args.linear_phase_site, image_res=args.image_res,
-            data_dir=os.path.join('data', args.run_name))
+            psmap_tag=args.psmap_tag, data_dir=os.path.join('data', args.run_name))
 
 
 if __name__ == '__main__':

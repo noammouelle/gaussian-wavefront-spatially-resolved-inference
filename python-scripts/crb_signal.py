@@ -304,11 +304,11 @@ def simple_scaling_crb(j_bar, n_shots):
 
 # ── driver: average over real shots from a generated dataset ────────────────
 
-def build_evaluators(data_dir, t_det, bins, likelihood='port', pixel_n_gh=8):
+def build_evaluators(data_dir, t_det, bins, likelihood='port', pixel_n_gh=8, psmap_tag='CONFOCAL_FINE'):
     ds_tmp = ImageShotDataset(str(data_dir / 'Z0' / 'data_IMG.h5'))
     edges = np.linspace(-ds_tmp.half_range, ds_tmp.half_range, bins + 1)
-    psmap_z0 = load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z0.h5'))
-    psmap_z100 = load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z100.h5'))
+    psmap_z0 = load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{psmap_tag}_Z0.h5'))
+    psmap_z100 = load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{psmap_tag}_Z100.h5'))
     sur_z0 = PSMAPSurrogate(psmap_z0, t_det, use_gpu=mi.USE_GPU)
     sur_z100 = PSMAPSurrogate(psmap_z100, t_det, use_gpu=mi.USE_GPU)
     # n_quad=1 is fine: batch_acs_gh (port path) doesn't touch the QMC samples,
@@ -325,13 +325,13 @@ def build_evaluators(data_dir, t_det, bins, likelihood='port', pixel_n_gh=8):
 
 
 def run(data_root, t_det, bins, gh_order, prior_std, n_shots_eval, f_signal,
-        likelihood='port', pixel_n_gh=8, out_json=None):
+        likelihood='port', pixel_n_gh=8, out_json=None, psmap_tag='CONFOCAL_FINE'):
     data_root = Path(data_root)
     run_dir = sorted(data_root.glob('run_*'))[0]
     ds_z0 = ImageShotDataset(str(run_dir / 'Z0' / 'data_IMG.h5'))
     ds_z100 = ImageShotDataset(str(run_dir / 'Z100' / 'data_IMG.h5'))
 
-    acs_z0, acs_z100 = build_evaluators(run_dir, t_det, bins, likelihood, pixel_n_gh)
+    acs_z0, acs_z100 = build_evaluators(run_dir, t_det, bins, likelihood, pixel_n_gh, psmap_tag)
 
     h_theta = np.array([1e-7, 1e-7, 1e-7, 1e-7, 1e-7, 1e-7, 1e-7, 1e-7])  # SI units
 
@@ -393,6 +393,8 @@ def main():
     p.add_argument('--sig_pos_std', type=float, default=10e-6)
     p.add_argument('--sig_vel_std', type=float, default=10e-6)
     p.add_argument('--out_json', type=str, default='')
+    p.add_argument('--psmap_tag', type=str, default='CONFOCAL_FINE',
+                   help="PSMAP tag: reads output-files/PSGRID4D_<tag>_Z{0,100}.h5")
     args = p.parse_args()
 
     prior_std = np.array([args.mu_pos_std, args.mu_pos_std, args.mu_vel_std, args.mu_vel_std,
@@ -400,7 +402,7 @@ def main():
 
     run(args.data_root, args.t_det, args.bins, args.gh_order, prior_std,
         args.n_shots_eval, args.f_signal, args.likelihood, args.pixel_n_gh,
-        args.out_json or None)
+        args.out_json or None, args.psmap_tag)
 
 
 if __name__ == '__main__':

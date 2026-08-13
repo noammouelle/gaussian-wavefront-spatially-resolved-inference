@@ -796,6 +796,10 @@ def main():
                    help='Output dir for sweep (default: results/mle_distributions/)')
     p.add_argument('--out',         type=str,   default='',
                    help='Output pkl path (single-run mode only)')
+    p.add_argument('--psmap_tag',   type=str,   default='CONFOCAL_FINE',
+                   help="PSMAP tag: reads output-files/PSGRID4D_<tag>_Z{0,100}.h5 "
+                        "(default: the analytic confocal beam; use a tag from "
+                        "phase_space_grids.py --tag for an arbitrary-wavefront PSMAP)")
     args = p.parse_args()
     args.use_moments  = bool(args.use_moments)
     args.use_true_eta = bool(args.use_true_eta)
@@ -837,8 +841,8 @@ def main():
     # ── Load PSMAPs once ──────────────────────────────────────────────────────
     log.info('Loading PSMAPs...')
     t0 = time.perf_counter()
-    psmap_z0   = load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z0.h5'))
-    psmap_z100 = load_psmap(str(REPO / 'output-files' / 'PSGRID4D_CONFOCAL_FINE_Z100.h5'))
+    psmap_z0   = load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{args.psmap_tag}_Z0.h5'))
+    psmap_z100 = load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{args.psmap_tag}_Z100.h5'))
     _ds_tmp = ImageShotDataset(str(run_dirs[0] / 'Z0' / 'data_IMG.h5'))
     edges = np.linspace(-_ds_tmp.half_range, _ds_tmp.half_range, args.bins + 1)
     del _ds_tmp

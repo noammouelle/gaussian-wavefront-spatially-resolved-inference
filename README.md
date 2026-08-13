@@ -294,28 +294,39 @@ surrogate = PSMAPSurrogate(psmap, t_det=3.8, use_gpu=True)   # same class map_in
 
 ### Step 3: point the inference pipeline at it
 
-**This is currently a manual swap, not a CLI flag.** `generate_data.py`,
-`map_inference.py`, `crb_signal.py`, `profile_cloud_nuisances.py`, and the
-`non_phase_shear/analysis/` scripts all read the PSMAP from the fixed path
-`output-files/PSGRID4D_CONFOCAL_FINE_Z{0,100}.h5` -- there's no `--psmap`
-flag yet to pick a tag. To actually run inference against a
-`wtype=interpolated` PSMAP:
+Every script that loads a PSMAP takes `--psmap_tag` (default
+`CONFOCAL_FINE`, matching the downloaded analytic files -- omit the flag
+entirely for the default confocal pipeline). Pass your `phase_space_grids.py
+--tag` value to run the exact same generate/fit/plot pipeline from Sections
+4-6 against your arbitrary-wavefront PSMAP instead:
 
 ```bash
-# back up the analytic confocal PSMAP first
-mv output-files/PSGRID4D_CONFOCAL_FINE_Z0.h5   output-files/PSGRID4D_CONFOCAL_FINE_Z0_backup.h5
-mv output-files/PSGRID4D_CONFOCAL_FINE_Z100.h5 output-files/PSGRID4D_CONFOCAL_FINE_Z100_backup.h5
-# swap your new PSMAP in under the name everything expects
-cp output-files/PSGRID4D_MY_WAVEFRONT_Z0.h5   output-files/PSGRID4D_CONFOCAL_FINE_Z0.h5
-cp output-files/PSGRID4D_MY_WAVEFRONT_Z100.h5 output-files/PSGRID4D_CONFOCAL_FINE_Z100.h5
-# ... now generate_data.py / phase_space_grids.py / the non_phase_shear
-# analysis scripts all pick it up automatically -- proceed with Section 4
-# as normal, using a new --tag/--label so results don't collide with the
-# confocal ones. Swap the backups back when done.
+cd python-scripts
+python generate_data.py --psmap_tag MY_WAVEFRONT \
+    --n_runs 20 --n_shots 200 --n_atoms 1000000 \
+    --signal_amp 0.1 --signal_freq 0.3 --signal_phase 0.5
+    # -> data/<auto-named-run>/, generated using the MY_WAVEFRONT PSMAP
+
+cd ../non_phase_shear/analysis
+python generate_kinematic_estimates.py <dataset_dir> 20 200 \
+    --label my_wavefront --psmap_tag MY_WAVEFRONT
+python beta_fits_from_kinematics.py <dataset_dir> 20 200 \
+    --label my_wavefront --psmap_tag MY_WAVEFRONT
+python make_paper_figures.py my_wavefront --n_runs 20 --n_shots 200
 ```
-Making this a real `--psmap` CLI flag across the affected scripts (rather
-than a file swap) is the natural next step if this becomes a routine
-workflow rather than a one-off experiment.
+
+`--psmap_tag` on `generate_kinematic_estimates.py`/`beta_fits_from_kinematics.py`
+should match whatever `--psmap_tag` the *dataset itself* was generated
+under (`generate_data.py`'s), not necessarily a different one -- theta/beta
+estimation reads the same PSMAP the images were rendered through. Also
+supported on `map_inference.py` and `crb_signal.py` (their own standalone
+CLIs). `profile_cloud_nuisances.py` already had a similar, more general
+`--psmap-z0`/`--psmap-z100` (full path, not tag) from before this branch.
+
+`phase_shear_fit.py` doesn't take `--psmap_tag` -- the phase_shear pipeline
+fits a fringe model directly on images and never touches the PSMAP at all
+(see Section 4b), so it's unaffected by which PSMAP a dataset was generated
+under and needs no flag here.
 
 ## 3. Reproduce existing numbers and figures (fast path, no data/GPU needed)
 
@@ -545,9 +556,6 @@ enough.
 
 Genuinely still open:
 
-- **No `--psmap` CLI flag** -- swapping wavefronts means overwriting
-  `output-files/PSGRID4D_CONFOCAL_FINE_Z{0,100}.h5` by hand (Section 2b,
-  Step 3). Worth fixing if this becomes routine rather than a one-off.
 - **`GetDelPhi` is zero for every beam type** (aispp `KNOWN_ISSUES.md`) --
   an arbitrary wavefront affects the PSMAP's phase but not the simulated
   trajectory/recoil. Fine for this pipeline's phase-based observables;
