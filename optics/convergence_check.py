@@ -42,7 +42,8 @@ from aisoptics import ParaxialPropagator, AngularSpectrumPropagator
 from aisoptics.fields.perturbations import FourierPerturbation, ZernikeSum
 
 from generate_wavefront import (
-    parse_mode, parse_zernike, DEFAULT_WAVELENGTH, DEFAULT_WAIST, DEFAULT_BEAM_RADIUS, PROPAGATORS,
+    parse_mode, parse_zernike, parse_zernike_random,
+    DEFAULT_WAVELENGTH, DEFAULT_WAIST, DEFAULT_BEAM_RADIUS, PROPAGATORS,
 )
 
 
@@ -85,6 +86,8 @@ def main():
                     help="see generate_wavefront.py --mode; checks the UP (aberrated) field")
     p.add_argument('--zernike', nargs='+', action='append', default=[],
                     help="see generate_wavefront.py --zernike")
+    p.add_argument('--zernike_random', nargs='+', default=None,
+                    help="see generate_wavefront.py --zernike_random")
     p.add_argument('--xlim', type=float, nargs=2, default=(-0.03, 0.03))
     p.add_argument('--ylim', type=float, nargs=2, default=(-0.03, 0.03))
     p.add_argument('--zlim', type=float, nargs=2, default=(-5.0, 20.0))
@@ -103,6 +106,8 @@ def main():
     backend = Backend("numpy")
     modes = [parse_mode(m) for m in args.mode]
     zterms = [parse_zernike(z, args.beam_radius) for z in args.zernike]
+    if args.zernike_random is not None:
+        zterms = zterms + parse_zernike_random(args.zernike_random, args.beam_radius)
 
     print(f'{len(modes)} Fourier mode(s), {len(zterms)} Zernike term(s), {len(nxy_list)} resolutions: ' +
           ', '.join(f'({nxy}x{nxy}x{nz})' for nxy, nz in zip(nxy_list, nz_list)))
@@ -150,6 +155,7 @@ def main():
             wavelength=args.wavelength, waist=args.waist, focus_z=args.focus_z, mirror_z=mirror_z,
             propagator=args.propagator, modes=[(m.qx, m.qy, m.amplitude, m.phase) for m in modes],
             zernike_terms=[(z.noll_index, z.amplitude) for z in zterms],
+            zernike_random_spec=args.zernike_random,
             resolutions=labels, phase_rms=[row['phase_rms'] for row in report.rows],
             amplitude_relative_rms=[row['amplitude_relative_rms'] for row in report.rows],
             worst_edge_ratio=worst_edge_ratio, out=args.out)

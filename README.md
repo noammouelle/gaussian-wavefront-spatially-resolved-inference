@@ -307,6 +307,55 @@ defaults), but the z=100 source needs the field sampled out to ~120m+.
 Building one field that covers both is expensive; it's usually more
 practical to generate a wavefront per `z0` value if you need both.
 
+#### Recipe: random Zernike aberration with a target total RMS
+
+`--zernike_random n=<count> rms=<rad>` picks `n` distinct random Noll
+indices and random amplitudes such that the combined phase RMS over the
+aperture equals `rms` (radians). This relies on `aisoptics`'s Zernike terms
+being individually RMS-normalised to 1 over the unit disk (Noll convention,
+verified numerically) and mutually orthogonal there, so RMS combines in
+quadrature: `rms = 2*pi*sqrt(sum(amplitude_i**2))`. It defaults to
+excluding Noll 1-3 (piston is physically inert; tip/tilt is a beam-pointing
+offset, not a wavefront distortion) -- override with `min_noll=1` if you
+actually want those. `split=equal` (default) gives every term the same RMS
+share; `split=dirichlet` gives a random, uneven split instead. Always pass
+`seed=<int>` for a reproducible draw -- otherwise every run differs and
+can't be regenerated later.
+
+```bash
+cd optics
+python generate_wavefront.py --tag confocal_random5 \
+    --zernike_random n=5 rms=0.1 seed=42 \
+    --beam_radius 0.03 --nx 9 --ny 9 --nz 401 --zlim -5 25
+```
+This combines with explicit `--zernike`/`--mode` terms if you pass both.
+The chosen `(noll, amplitude)` pairs are printed to stdout and saved in the
+`runs_manifest.jsonl` entry (`zernike_terms`) -- that's the actual
+reproducible spec; `zernike_random_spec` alone only reproduces it if
+`aisoptics`'s RNG usage doesn't change between versions, so if you need to
+rerun an old draw exactly, prefer copying the printed `--zernike noll=...
+amp=...` pairs over relying on the same `--zernike_random` args.
+
+Note this only controls what the aberration *is* -- it has nothing to do
+with confocal vs. flat mirror geometry, which is a property of the
+`ais++`/`phase_space_grids.py` beam config (`wtype=confocal` vs.
+`wtype=gaussian`, both driven by the same `wtype=interpolated` field files
+here) and is set entirely in Step 2 below.
+
+Same workflow as any other `--zernike` run from here: convergence-check it
+before trusting the resolution (random higher-Noll terms can need a finer
+grid than a hand-picked low-order one), then look at it in the notebook:
+```bash
+python convergence_check.py --zernike_random n=5 rms=0.1 seed=42 \
+    --nxy 5 9 17 33 --nz 41 81 161 321
+
+jupyter notebook optics/notebooks/wavefront_visualization.ipynb
+```
+For the notebook, copy the printed `noll=... amp=...` pairs into its
+`ZTERMS` cell as explicit `ZernikeAberration(...)` entries (the notebook
+doesn't take CLI args) -- that also makes the visualised run exactly
+reproducible rather than tied to `aisoptics`'s RNG state.
+
 ### Step 2: build the PSMAP (`phase_space_grids.py`)
 
 ```bash

@@ -120,6 +120,61 @@ def parse_zernike(spec, beam_radius):
     )
 
 
+def random_zernike_terms(n, rms, beam_radius, min_noll=4, max_noll=20, split='equal', seed=None):
+    """n random, distinct Noll-indexed ZernikeAberration terms whose combined
+    phase RMS over the aperture equals `rms` (radians).
+
+    Relies on aisoptics' Zmn being RMS-normalised to 1 over the unit disk
+    (Noll convention -- verified numerically against a Monte-Carlo sample of
+    the unit disk, see the terminal output of this function for a rerun of
+    that check on request) and on distinct Noll terms being orthogonal there,
+    so a single term's phase RMS is 2*pi*amplitude and combined RMS adds in
+    quadrature: rms = 2*pi*sqrt(sum(amplitude_i**2)).
+
+    min_noll/max_noll default to 4..20 -- excludes piston (1, a constant,
+    physically inert) and tip/tilt (2, 3, indistinguishable from a beam
+    pointing offset rather than a genuine wavefront distortion). Pass
+    min_noll=1 if you actually want those included.
+
+    split='equal' gives every term the same RMS contribution; 'dirichlet'
+    draws a random variance split (Dirichlet(1,...,1)) so some terms
+    dominate and others are near-negligible -- more representative of a
+    real, uneven aberration budget.
+    """
+    rng = np.random.default_rng(seed)
+    candidates = np.arange(min_noll, max_noll + 1)
+    if n > len(candidates):
+        raise ValueError(f'n={n} exceeds available distinct Noll indices in '
+                          f'[{min_noll},{max_noll}] ({len(candidates)})')
+    noll_idx = rng.choice(candidates, size=n, replace=False)
+    if split == 'equal':
+        weights = np.full(n, 1.0 / n)
+    elif split == 'dirichlet':
+        weights = rng.dirichlet(np.ones(n))
+    else:
+        raise ValueError(f"split must be 'equal' or 'dirichlet', got {split!r}")
+    signs = rng.choice([-1.0, 1.0], size=n)
+    amplitudes = signs * (rms / (2.0 * np.pi)) * np.sqrt(weights)
+    terms = [ZernikeAberration(noll_index=int(j), amplitude=float(a), beam_radius=beam_radius)
+              for j, a in zip(noll_idx, amplitudes)]
+    achieved_rms = 2.0 * np.pi * np.sqrt(np.sum(amplitudes ** 2))
+    print(f'random Zernike terms (target rms={rms:g}, achieved={achieved_rms:.6g}): ' +
+          ', '.join(f'noll={t.noll_index} amp={t.amplitude:.6g}' for t in terms))
+    return terms
+
+
+def parse_zernike_random(spec, beam_radius):
+    """Parse '--zernike_random n=5 rms=0.1 [seed=1] [min_noll=4] [max_noll=20]
+    [split=equal|dirichlet]' style key=value tokens."""
+    kv = dict(tok.split('=') for tok in spec)
+    return random_zernike_terms(
+        n=int(kv['n']), rms=float(kv['rms']), beam_radius=beam_radius,
+        min_noll=int(kv.get('min_noll', 4)), max_noll=int(kv.get('max_noll', 20)),
+        split=kv.get('split', 'equal'),
+        seed=int(kv['seed']) if 'seed' in kv else None,
+    )
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--tag', required=True, help='output filename stem and run_manifest label')
@@ -142,6 +197,10 @@ def main():
     p.add_argument('--zernike', nargs='+', action='append', default=[],
                     help="one Zernike aberration term as 'noll=<index> amp=<rad>' "
                          "(same convention as ais++'s zernikecoeff_N). Repeat for multiple terms.")
+    p.add_argument('--zernike_random', nargs='+', default=None,
+                    help="generate n random Zernike terms with combined phase rms=<rad>, as "
+                         "'n=<count> rms=<rad> [seed=<int>] [min_noll=4] [max_noll=20] "
+                         "[split=equal|dirichlet]'. Combines with any explicit --zernike terms.")
     p.add_argument('--xlim', type=float, nargs=2, default=(-0.03, 0.03), help='m')
     p.add_argument('--ylim', type=float, nargs=2, default=(-0.03, 0.03), help='m')
     p.add_argument('--zlim', type=float, nargs=2, default=(-5.0, 20.0), help='m')
@@ -161,6 +220,8 @@ def main():
 
     modes = [parse_mode(m) for m in args.mode]
     zterms = [parse_zernike(z, args.beam_radius) for z in args.zernike]
+    if args.zernike_random is not None:
+        zterms = zterms + parse_zernike_random(args.zernike_random, args.beam_radius)
     print(f'{len(modes)} Fourier mode(s), {len(zterms)} Zernike term(s): ' +
           (', '.join(f'Fourier(qx={m.qx:g},qy={m.qy:g},amp={m.amplitude:g},phase={m.phase:g})' for m in modes) +
            (' ' if modes and zterms else '') +
@@ -218,6 +279,7 @@ def main():
             beam_radius=args.beam_radius, propagator=args.propagator,
             modes=[(m.qx, m.qy, m.amplitude, m.phase) for m in modes],
             zernike_terms=[(z.noll_index, z.amplitude) for z in zterms],
+            zernike_random_spec=args.zernike_random,
             xlim=list(args.xlim), ylim=list(args.ylim), zlim=list(args.zlim),
             nx=args.nx, ny=args.ny, nz=args.nz,
             down_file=str(down_path), up_file=str(up_path))
