@@ -1,5 +1,9 @@
 data/
-output-files/
+output-files/*
+!output-files/one_atom.h5
+!output-files/one_atom_TRAJ.h5
+optics/fields/
+input-files/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/

@@ -1,5 +1,7 @@
 # Both pipelines (non_phase_shear/ and phase_shear/) were run under a single
 # conda env with aispy installed editable (see README.md "aispy dependency").
+# optics/ (arbitrary wavefronts, Section 2b) additionally needs aisoptics,
+# also editable -- see README.md "aisoptics dependency".
 # Python 3.14.3 here; should work with any recent 3.11+.
 numpy==2.4.3
 scipy==1.17.1

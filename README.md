@@ -18,12 +18,13 @@ position-resolved inference methods:
 
 Both pipelines consume the same underlying simulated datasets (images from
 a Gaussian atom cloud imaged through the PSMAP point-spread surrogate) --
-they differ only in whether a phase ramp (wavefront gradient) was injected
-at generation time, and in which observable/model each pipeline fits. This
-is intentional: the plan is to extend `generate_data.py`'s currently
-linear-only phase-ramp injection to **arbitrary wavefronts** and rerun both
-pipelines unchanged against the new data -- see "Extending to arbitrary
-wavefronts" below.
+they differ only in whether a wavefront systematic was injected at PSMAP
+generation time, and in which observable/model each pipeline fits. This
+branch now also includes the machinery to generate **arbitrary wavefronts**
+(not just an analytic confocal/gaussian beam) via `aisoptics` +
+`ais++`'s `wtype=interpolated` beam, and rerun both pipelines against a
+PSMAP built from one -- see Section 2b and "Arbitrary wavefronts: status
+and what's still open" below.
 
 **The goal of this README is to walk through the whole pipeline
 end-to-end** -- generate → fit → plot -- so that running it again with new
@@ -39,13 +40,31 @@ easy-to-extend base.
 ## Layout
 
 ```
-python-scripts/       shared core library + data generation
-    generate_data.py        synthetic dataset generation (PSMAP -> images)
+python-scripts/       shared core library + data/PSMAP generation
+    phase_space_grids.py     builds the PSMAP itself (ais++ psgrid mode): confocal
+                             (analytic, default) or interpolated (arbitrary wavefront)
+    generate_data.py        synthetic shot-image dataset generation (PSMAP -> images)
     phase_shear_fit.py       phase-shear MLE fit (Gaussian x fringe model on images)
+    one_atom_traj.py         generates the reference trajectory (needs a built ais++ binary)
     crb_signal.py, map_inference.py, pixel_acs_grad.py, profile_cloud_nuisances.py
                              non_phase_shear inference library (theta/beta estimators)
 helpers/               shared utilities (dataset I/O, PSMAP-adjacent helpers, run tagging)
 runs_manifest.jsonl    append-only log of every pipeline stage that's been run (see Section 6)
+
+optics/                arbitrary-wavefront generation (aisoptics), independent of any
+                        one dataset -- see Section 4a-pre
+    generate_wavefront.py    builds down (perfect)/up (aberrated-on-reflection) beam
+                             fields, exports HDF5 for phase_space_grids.py --wtype interpolated
+    convergence_check.py     grid self-convergence check before trusting a resolution
+    notebooks/wavefront_visualization.ipynb
+                             phase/amplitude maps at the mirror plane, down vs. up
+    fields/                 generated HDF5 fields (gitignored; regenerate as needed)
+
+notebooks/             shared inspection notebooks (data_inspection.ipynb,
+                        psmap_inspection.ipynb, trajectory_inspection.ipynb)
+output-files/one_atom.h5, one_atom_TRAJ.h5
+                        small reference trajectory files, committed directly (not
+                        gitignored like the rest of output-files/ -- no download needed)
 
 non_phase_shear/
     analysis/           generate_kinematic_estimates.py, beta_fits_from_kinematics.py,
@@ -93,44 +112,67 @@ for `generate_data.py`. `phase_shear/` fits directly on binned images with
 numbers already in `*/results/` without a GPU or without `aispy` at all --
 you only need both for data generation / regenerating results from scratch.
 
-### aispy dependency (required for generation and for both analysis pipelines)
+### aispy dependency (required for everything)
 
 The core library imports `aispy.psmap` (`load_psmap`, `PSMAPSurrogate`) to
 read and interpolate the point-spread-map surrogate files, and
-`generate_data.py` imports the same to simulate new datasets. This is
-**not** a pip package -- it's a sibling repo that must be installed
-separately:
+`generate_data.py`/`phase_space_grids.py`/`optics/` all build `.aisi` input
+files through `aispy.utils.AISFlow`. This is **not** a pip package -- it's
+a sibling repo that must be installed separately, **as an editable
+install** (a plain, non-editable `pip install` silently freezes a stale
+copy, which caused real bugs during development -- see `git log` for
+`_write_wavefront_params` in `aispy` if curious):
 
 ```bash
 git clone git@github.com:noammouelle/aispy.git ~/local/aispy
 cd ~/local/aispy
-git checkout c3a39e35d46f9a60984170aa4eacbb867029eae8   # branch: trajectory-plots
+git checkout v0.0.2   # or master; commit 720c098d.. + local fixes as of this writing
 pip install -e .
 ```
 
-### aispp / ais++ dependency (only needed to regenerate PSMAP files from scratch)
+### aisoptics dependency (required only for Section 2b -- arbitrary wavefronts)
 
-`aispp` is the underlying wavefront/photon-detection simulator used to
-generate the PSMAP surrogate files in `output-files/` in the first place.
-**Nothing in this branch imports aispp** -- `generate_data.py` and both
-analysis pipelines only ever consume the already-built PSMAP `.h5` files
-(fetched via `download_data.sh`). aispp is documented here purely for
-provenance / in case you want to regenerate the PSMAP itself (e.g. to
-change the physical interferometer geometry, not the injected wavefront --
-see "Extending to arbitrary wavefronts" for that):
+`aisoptics` builds and samples optical fields (analytic Gaussian beams,
+Fourier-mode/sampled-map perturbations, composite fields) and exports them
+in the HDF5 layout `aispp`'s `wtype=interpolated` beam reads. Not needed
+for anything in Sections 1-6 (the confocal-PSMAP-based pipelines); only for
+`optics/` in Section 2b.
+
+```bash
+git clone git@github.com:noammouelle/aisoptics.git ~/local/aisoptics
+cd ~/local/aisoptics
+git checkout v0.0.2
+pip install -e ".[dev]"
+```
+
+### aispp / ais++ dependency (only needed to (re)generate PSMAP files, Section 2b)
+
+`aispp` is the underlying atom-interferometer simulator (compiled C++
+binary, `ais++`) used to generate the PSMAP surrogate files in
+`output-files/` in the first place, via `phase_space_grids.py`. **Nothing
+in the day-to-day pipeline (Sections 3-6) imports or runs aispp** --
+`generate_data.py` and both analysis pipelines only ever consume the
+already-built PSMAP `.h5` files (fetched via `download_data.sh`, or built
+once via Section 2b). You need a built `ais++` binary only if you're
+generating a new PSMAP (default confocal, or arbitrary wavefront via
+`optics/`) or the reference trajectory (`one_atom_traj.py`).
 
 ```bash
 git clone git@github.com:noammouelle/aispp.git ~/local/aispp
 cd ~/local/aispp
-git checkout d89bbbc77f696069d78d540c7ed748a2a60fb57a   # branch: confocal-mirror-type
-# see aispp's own README for build instructions (it's a C++/Python simulator)
+git checkout v0.0.2   # commit 61be38d, includes wtype=interpolated support
+mkdir build && cd build
+cmake .. && cmake --build . --target ais++ -j4   # needs HDF5 (H5Cpp.h) + GSL + OpenMP dev packages
 ```
-
-Note: this aispp commit ("Wire GetDelPhi to the existing
-gaussianGradientWavefront for Gaussian beams") already touches
-wavefront-gradient handling and may be directly relevant groundwork for
-the arbitrary-wavefront extension -- worth checking before duplicating
-that work in `generate_data.py`.
+`KNOWN_ISSUES.md` in the aispp repo is worth reading before relying on
+`wtype=interpolated` for anything beyond phase observables: as of v0.0.2,
+`AISLaserBeam::GetDelPhi` returns zero for *every* beam type (confocal,
+gaussian, and interpolated alike), so the wavefront gradient does not
+perturb the atom's trajectory/recoil -- only the accumulated phase is
+affected. Verified directly (see Section 2b): an interpolated beam with no
+aberration reproduces the sampled-vs-analytic case closely, and adding a
+Fourier-mode aberration changes the output phase shift by a real,
+non-trivial amount while leaving position/velocity bit-identical.
 
 ## 2. Get the PSMAP files (required prerequisite for everything)
 
@@ -142,6 +184,138 @@ This fetches the two PSMAP surrogate files (`output-files/`, ~3 GB,
 required before you can generate *any* data) plus the four pre-generated
 datasets used for the results already checked into `*/results/` (~28 GB
 more -- skip these if you're only generating your own new datasets).
+
+## 2b. Optional: generate your own PSMAP (confocal or arbitrary wavefront)
+
+Everything above assumes the two downloaded PSMAP files
+(`PSGRID4D_CONFOCAL_FINE_Z{0,100}.h5`, analytic confocal-mirror beam). This
+section is for when you want a *different* PSMAP -- either regenerating the
+same confocal one from scratch, or building one under an **arbitrary
+wavefront** (any field `aisoptics` can produce: Fourier modes, sampled
+maps, ...) instead of the analytic beam. This is a much bigger step up from
+`generate_data.py`'s own `--linear_phase_kappa` (a cheap post-hoc phase
+ramp painted onto images that already exist) -- it reruns the actual
+`ais++` atom-optics simulation with a different beam and produces a new
+PSMAP that captures how that wavefront really affects `dphi`/amplitude
+as a function of the atom's initial phase-space coordinates.
+
+**Requires a built `ais++` binary** (see the aispp section above) -- this
+is the one place in this repo (besides `one_atom_traj.py`) that needs more
+than `aispy`+`aisoptics`.
+
+### Physical model
+
+A perfect, unaberrated beam travels down to the retroreflecting mirror at
+z=0 and picks up a wavefront aberration on reflection (mirror surface
+imperfections), so the returning (upward) beam is the aberrated one:
+
+```
+down beam = GaussianBeam(...)                              (perfect)
+up beam   = GaussianBeam(...) + phase_perturbation(x, y)    (aberrated)
+```
+
+### Step 1: build and visualise the wavefront (`optics/`)
+
+```bash
+cd optics
+python generate_wavefront.py --tag my_wavefront \
+    --mode qx=1571 qy=0 amp=0.15 phase=0 \
+    --nx 9 --ny 9 --nz 401 --zlim -5 25
+```
+`--mode` is a Fourier mode (`qx`, `qy` in rad/m, `amp` in rad, `phase` in
+rad); repeat `--mode` for a sum of several. Omit `--mode` entirely for a
+flat (unaberrated) mirror -- useful as a sanity check that
+`wtype=interpolated` reproduces the analytic confocal/gaussian result.
+Writes `optics/fields/my_wavefront_{down,up}.h5`.
+
+**Before trusting a grid resolution**, check it's actually resolved the
+wavefront you asked for:
+```bash
+python convergence_check.py --mode qx=1571 qy=0 amp=0.15 phase=0 \
+    --nxy 5 9 17 33 --nz 41 81 161 321
+```
+Compares increasingly fine grids against the finest one (self-consistency
+under refinement -- not proof the finest grid is exact). Watch `phase_rms`
+in the printed report and `convergence_report.png`; `amplitude_relative_rms`
+is not a useful metric here (it blows up in the beam's low-amplitude wings
+where dividing by ~0 amplitude dominates the "relative" error -- see the
+script's own printed note). Higher spatial-frequency `--mode`s need finer
+grids to resolve; there's no universally-correct default resolution.
+
+Then look at it:
+```bash
+jupyter notebook optics/notebooks/wavefront_visualization.ipynb
+```
+Edit the `MODES`/grid config cell to match what you generated. Shows phase
++ amplitude at the mirror plane for both beams, the isolated aberration
+(up minus down, checked against the analytic Fourier-mode sum), and a 3D
+surface.
+
+**z-range matters**: the grid must cover wherever the atom actually is when
+a pulse fires. `phase_space_grids.py` launches atoms from `z0=0` (bottom
+source) or `z0=100` (top source, MAGIS-100 baseline) and they fly up and
+back down; the z=0 source stays within a few tens of metres of the mirror
+(z0-relative apex height depends on `--T`/`lmt_order`, ~20m for the
+defaults), but the z=100 source needs the field sampled out to ~120m+.
+Building one field that covers both is expensive; it's usually more
+practical to generate a wavefront per `z0` value if you need both.
+
+### Step 2: build the PSMAP (`phase_space_grids.py`)
+
+```bash
+cd ../python-scripts
+python phase_space_grids.py --nx 25 --ny 25 --nvx 25 --nvy 25 \
+    --wtype interpolated \
+    --beam_file_down ../optics/fields/my_wavefront_down.h5 \
+    --beam_file_up   ../optics/fields/my_wavefront_up.h5 \
+    --tag MY_WAVEFRONT
+```
+(`--nx`/`--ny`/`--nvx`/`--nvy` must be odd, ≥5 -- `PSMAPSurrogate` uses
+cubic interpolation, which needs at least 4 points per axis; the production
+PSMAP uses 25.) Omit `--wtype`/`--beam_file_*`/`--tag` entirely to
+regenerate the default analytic confocal PSMAP (`--tag` then defaults to
+`CONFOCAL_FINE`, matching the already-downloaded files' names). Writes
+`input-files/PSGRID4D_<tag>_Z{0,100}.aisi`; run each through `ais++` as the
+script prints at the end:
+```bash
+ais++ -i ../input-files/PSGRID4D_MY_WAVEFRONT_Z0.aisi   -o ../output-files/PSGRID4D_MY_WAVEFRONT_Z0.h5
+ais++ -i ../input-files/PSGRID4D_MY_WAVEFRONT_Z100.aisi -o ../output-files/PSGRID4D_MY_WAVEFRONT_Z100.h5
+```
+A 25×25×25×25 grid is 390,625 atoms per file and will take a while; test
+with a small grid first (`--nx 5 --ny 5 --nvx 5 --nvy 5` runs in seconds)
+to confirm the wiring works before committing to the full run.
+
+Verify the result loads normally:
+```python
+from aispy.psmap import load_psmap, PSMAPSurrogate
+psmap = load_psmap('output-files/PSGRID4D_MY_WAVEFRONT_Z0.h5')
+surrogate = PSMAPSurrogate(psmap, t_det=3.8, use_gpu=True)   # same class map_inference.py uses
+```
+
+### Step 3: point the inference pipeline at it
+
+**This is currently a manual swap, not a CLI flag.** `generate_data.py`,
+`map_inference.py`, `crb_signal.py`, `profile_cloud_nuisances.py`, and the
+`non_phase_shear/analysis/` scripts all read the PSMAP from the fixed path
+`output-files/PSGRID4D_CONFOCAL_FINE_Z{0,100}.h5` -- there's no `--psmap`
+flag yet to pick a tag. To actually run inference against a
+`wtype=interpolated` PSMAP:
+
+```bash
+# back up the analytic confocal PSMAP first
+mv output-files/PSGRID4D_CONFOCAL_FINE_Z0.h5   output-files/PSGRID4D_CONFOCAL_FINE_Z0_backup.h5
+mv output-files/PSGRID4D_CONFOCAL_FINE_Z100.h5 output-files/PSGRID4D_CONFOCAL_FINE_Z100_backup.h5
+# swap your new PSMAP in under the name everything expects
+cp output-files/PSGRID4D_MY_WAVEFRONT_Z0.h5   output-files/PSGRID4D_CONFOCAL_FINE_Z0.h5
+cp output-files/PSGRID4D_MY_WAVEFRONT_Z100.h5 output-files/PSGRID4D_CONFOCAL_FINE_Z100.h5
+# ... now generate_data.py / phase_space_grids.py / the non_phase_shear
+# analysis scripts all pick it up automatically -- proceed with Section 4
+# as normal, using a new --tag/--label so results don't collide with the
+# confocal ones. Swap the backups back when done.
+```
+Making this a real `--psmap` CLI flag across the affected scripts (rather
+than a file swap) is the natural next step if this becomes a routine
+workflow rather than a one-off experiment.
 
 ## 3. Reproduce existing numbers and figures (fast path, no data/GPU needed)
 
@@ -208,6 +382,28 @@ python python-scripts/generate_data.py --n_runs 20 --n_shots 200 --n_atoms 10000
     --signal_amp 0.1 --signal_freq 0.3 --signal_phase 0.5 \
     --linear_phase_kappa 3.14e4 --linear_phase_site both
 ```
+
+### Visualise the raw data / PSMAP / trajectory (recommended before fitting)
+
+`notebooks/` (repo root, shared by both pipelines -- these aren't specific
+to phase_shear or non_phase_shear) has three inspection notebooks for
+sanity-checking things *before* trusting any fit built on top of them:
+
+- **`data_inspection.ipynb`** -- single-shot images, ground-state-fraction
+  maps (Z0, Z100, and their differential), and the port-count "fringe
+  ellipse" across shots, for any dataset under `data/`. Point it at a
+  freshly-generated dataset to confirm the cloud/fringe look sane before
+  running 4b.
+- **`psmap_inspection.ipynb`** -- visualises `PSMAPSurrogate.eval()` (the
+  differential phase and per-port amplitudes vs. pairs of initial
+  kinematic coordinates) for a PSMAP file. Check for smooth surfaces (no
+  interpolation artifacts) before trusting fits that depend on it.
+- **`trajectory_inspection.ipynb`** -- spacetime diagram of a single-atom
+  reference trajectory (`output-files/one_atom_TRAJ.h5`, committed
+  directly to this branch since it's small -- no download needed). Useful
+  for checking pulse-sequence timing looks right. Regenerating it needs a
+  built `ais++` binary from `aispp` (see the notebook's header cell) --
+  the one place in this branch that actually requires more than `aispy`.
 
 ### 4b. Fit: theta/beta estimators (non_phase_shear) or phase-shear MLE (phase_shear)
 
@@ -334,30 +530,39 @@ It's a plain append-only log, not a database -- if you regenerate the same
 tag twice you'll get two entries; the most recent one reflects the current
 state of that tag's output files.
 
-## Extending to arbitrary wavefronts
+## Arbitrary wavefronts: status and what's still open
 
-Currently `generate_data.py --linear_phase_kappa` only supports a linear
-phase ramp `phi = kappa * xf` (see `_linear_phase_profile()` in that file).
-To inject an arbitrary wavefront:
+Section 2b covers the now-working path: `optics/` (aisoptics) builds a
+sampled wavefront, `phase_space_grids.py --wtype interpolated` bakes it
+into a real PSMAP via `ais++`, and everything downstream (Sections 3-6)
+consumes that PSMAP exactly like the confocal one, once you've done the
+manual swap described there. This supersedes `generate_data.py
+--linear_phase_kappa` (a cheap post-hoc phase ramp painted onto images
+after generation, not run through the actual beam-optics simulation) for
+anything where physical fidelity matters -- `--linear_phase_kappa` is
+still there and still useful as a fast/cheap approximation when it's good
+enough.
 
-1. Generalise `_linear_phase_profile()` (or add a new function) to accept
-   an arbitrary `phi(xf, yf, vxf, vyf)` callable instead of a fixed linear
-   form -- the rest of `generate_data.py`'s pipeline (`apply_ramp`,
-   `phase_profile` argument threading) already treats the phase profile as
-   an opaque function, so this should be a localised change.
-2. `phase_shear_fit.py`'s fringe model (`_phase()`, currently
-   `kappa_x*xf + kappa_y*yf + gamma_x*xf**2 + gamma_y*yf**2`, i.e. linear +
-   quadratic) would need matching terms added for higher-order wavefronts
-   (e.g. Zernike terms) if you want the MLE fit itself (not just the
-   injected truth) to track a more complex wavefront shape.
-3. Both `non_phase_shear/` and `phase_shear/` analysis pipelines are
-   tag/label-driven (Section 6) and don't otherwise assume anything about
-   the wavefront -- pointing them at a new dataset tag should be enough to
-   rerun both comparisons unchanged.
+Genuinely still open:
 
-The current aispp HEAD (`d89bbbc7`, "Wire GetDelPhi to the existing
-gaussianGradientWavefront for Gaussian beams") may already have relevant
-groundwork on the simulator side for this -- check before duplicating.
+- **No `--psmap` CLI flag** -- swapping wavefronts means overwriting
+  `output-files/PSGRID4D_CONFOCAL_FINE_Z{0,100}.h5` by hand (Section 2b,
+  Step 3). Worth fixing if this becomes routine rather than a one-off.
+- **`GetDelPhi` is zero for every beam type** (aispp `KNOWN_ISSUES.md`) --
+  an arbitrary wavefront affects the PSMAP's phase but not the simulated
+  trajectory/recoil. Fine for this pipeline's phase-based observables;
+  would matter if a future observable depended on the wavefront kicking
+  the atom's momentum.
+- **`phase_shear_fit.py`'s fringe model** (`_phase()`, currently
+  `kappa_x*xf + kappa_y*yf + gamma_x*xf**2 + gamma_y*yf**2`, i.e. linear +
+  quadratic) only has enough terms to *fit* a linear/quadratic wavefront.
+  A PSMAP built from a higher-order arbitrary wavefront (e.g. several
+  Fourier modes) will still generate correctly and flow through
+  `non_phase_shear/` (which doesn't fit a fringe model at all, just theta/
+  beta from the pixel likelihood) but `phase_shear/`'s MLE fit itself won't
+  track the extra structure unless matching terms are added here.
+- **z-range cost for the z0=100 source** -- see Section 2b's z-range note;
+  no shortcut implemented, just flagged.
 
 ## Notes on file layout / portability
 
