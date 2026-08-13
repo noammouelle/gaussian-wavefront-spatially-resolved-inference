@@ -1,0 +1,29 @@
+\contentsline {section}{\numberline {1}Purpose and Relationship to Other Estimators}{2}{section.1}%
+\contentsline {paragraph}{Why this exists.}{2}{section*.2}%
+\contentsline {paragraph}{Relationship to other pipelines in this repo.}{2}{section*.3}%
+\contentsline {section}{\numberline {2}Per-Shot Pixel Likelihood (Recap)}{2}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Parameters}{2}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Pixel Rate and Poisson Likelihood}{2}{subsection.2.2}%
+\contentsline {section}{\numberline {3}Pixel ACS via Exact CDF $\times $ 2D Gauss--Hermite}{3}{section.3}%
+\contentsline {section}{\numberline {4}PSMAP Lookup: Catmull--Rom Interpolation and its Analytic Derivative}{4}{section.4}%
+\contentsline {subsection}{\numberline {4.1}Value: 4D Cubic Interpolation}{4}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Analytic Gradient}{4}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Chaining Through to $\theta $}{5}{subsection.4.3}%
+\contentsline {section}{\numberline {5}Nested Profiling: Arrow Sparsity}{5}{section.5}%
+\contentsline {section}{\numberline {6}Inner Solve: Per-Shot $(\phi _i,\theta _{i,0},\theta _{i,100})$}{6}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Bounds (analytic path only)}{6}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Objective Rescaling}{6}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Convergence Check and the Envelope-Theorem Shortcut}{6}{subsection.6.3}%
+\contentsline {section}{\numberline {7}Outer Solve: $\beta =(A_s,A_c)$}{7}{section.7}%
+\contentsline {subsection}{\numberline {7.1}\texttt {fit\_beta} --- Per-Shot Python Loop}{7}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}\texttt {fit\_beta\_batch} --- Batched/GPU Inner Solve}{7}{subsection.7.2}%
+\contentsline {section}{\numberline {8}Batching (\texttt {pixel\_acs\_grad\_batch.py})}{7}{section.8}%
+\contentsline {section}{\numberline {9}Assumptions and Simplifications}{8}{section.9}%
+\contentsline {section}{\numberline {10}Known Open Issues / Current Investigation}{9}{section.10}%
+\contentsline {paragraph}{Issue 1 --- fixed.}{9}{section*.4}%
+\contentsline {paragraph}{Issue 2 --- found, \textbf {not} fixed; structural.}{9}{section*.5}%
+\contentsline {paragraph}{Bottom line.}{9}{section*.6}%
+\contentsline {section}{\numberline {11}Reproducibility}{9}{section.11}%
+\contentsline {subsection}{\numberline {11.1}CLI (\texttt {fit\_beta} only)}{9}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}Default Hyperparameters}{10}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Output}{10}{subsection.11.3}%

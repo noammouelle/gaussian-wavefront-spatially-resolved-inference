@@ -1,0 +1,54 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Purpose and Relationship to Other Estimators}{2}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Why this exists.}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Relationship to other pipelines in this repo.}{2}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Per-Shot Pixel Likelihood (Recap)}{2}{section.2}\protected@file@percent }
+\newlabel{sec:likelihood}{{2}{2}{Per-Shot Pixel Likelihood (Recap)}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Parameters}{2}{subsection.2.1}\protected@file@percent }
+\newlabel{eq:xi}{{1}{2}{Parameters}{equation.2.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Pixel Rate and Poisson Likelihood}{2}{subsection.2.2}\protected@file@percent }
+\newlabel{eq:lambda}{{2}{2}{Pixel Rate and Poisson Likelihood}{equation.2.2}{}}
+\newlabel{eq:nll_ai}{{3}{3}{Pixel Rate and Poisson Likelihood}{equation.2.3}{}}
+\newlabel{eq:Lfix-recap}{{4}{3}{Pixel Rate and Poisson Likelihood}{equation.2.4}{}}
+\newlabel{eq:Fi}{{5}{3}{Pixel Rate and Poisson Likelihood}{equation.2.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Pixel ACS via Exact CDF $\times $ 2D Gauss--Hermite}{3}{section.3}\protected@file@percent }
+\newlabel{sec:acs}{{3}{3}{Pixel ACS via Exact CDF $\times $ 2D Gauss--Hermite}{section.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}PSMAP Lookup: Catmull--Rom Interpolation and its Analytic Derivative}{4}{section.4}\protected@file@percent }
+\newlabel{sec:psmap}{{4}{4}{PSMAP Lookup: Catmull--Rom Interpolation and its Analytic Derivative}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Value: 4D Cubic Interpolation}{4}{subsection.4.1}\protected@file@percent }
+\newlabel{eq:cr_interp}{{11}{4}{Value: 4D Cubic Interpolation}{equation.4.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Analytic Gradient}{4}{subsection.4.2}\protected@file@percent }
+\newlabel{eq:cr_grad}{{12}{4}{Analytic Gradient}{equation.4.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Chaining Through to $\theta $}{5}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Nested Profiling: Arrow Sparsity}{5}{section.5}\protected@file@percent }
+\newlabel{sec:arrow}{{5}{5}{Nested Profiling: Arrow Sparsity}{section.5}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Inner Solve: Per-Shot $(\phi _i,\theta _{i,0},\theta _{i,100})$}{6}{section.6}\protected@file@percent }
+\newlabel{sec:inner}{{6}{6}{Inner Solve: Per-Shot $(\phi _i,\theta _{i,0},\theta _{i,100})$}{section.6}{}}
+\newlabel{eq:inner}{{13}{6}{Inner Solve: Per-Shot $(\phi _i,\theta _{i,0},\theta _{i,100})$}{equation.6.13}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}Bounds (analytic path only)}{6}{subsection.6.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}Objective Rescaling}{6}{subsection.6.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}Convergence Check and the Envelope-Theorem Shortcut}{6}{subsection.6.3}\protected@file@percent }
+\newlabel{sec:envelope}{{6.3}{6}{Convergence Check and the Envelope-Theorem Shortcut}{subsection.6.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Outer Solve: $\beta =(A_s,A_c)$}{7}{section.7}\protected@file@percent }
+\newlabel{sec:outer}{{7}{7}{Outer Solve: $\beta =(A_s,A_c)$}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}\texttt  {fit\_beta} --- Per-Shot Python Loop}{7}{subsection.7.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}\texttt  {fit\_beta\_batch} --- Batched/GPU Inner Solve}{7}{subsection.7.2}\protected@file@percent }
+\newlabel{sec:outer_batch}{{7.2}{7}{\code {fit\_beta\_batch} --- Batched/GPU Inner Solve}{subsection.7.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Batching (\texttt  {pixel\_acs\_grad\_batch.py})}{7}{section.8}\protected@file@percent }
+\newlabel{sec:batching}{{8}{7}{Batching (\code {pixel\_acs\_grad\_batch.py})}{section.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {9}Assumptions and Simplifications}{8}{section.9}\protected@file@percent }
+\newlabel{sec:assumptions}{{9}{8}{Assumptions and Simplifications}{section.9}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {10}Known Open Issues / Current Investigation}{9}{section.10}\protected@file@percent }
+\newlabel{sec:issues}{{10}{9}{Known Open Issues / Current Investigation}{section.10}{}}
+\@writefile{toc}{\contentsline {paragraph}{Issue 1 --- fixed.}{9}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Issue 2 --- found, \textbf  {not} fixed; structural.}{9}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Bottom line.}{9}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {11}Reproducibility}{9}{section.11}\protected@file@percent }
+\newlabel{sec:reproducibility}{{11}{9}{Reproducibility}{section.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.1}CLI (\texttt  {fit\_beta} only)}{9}{subsection.11.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.2}Default Hyperparameters}{10}{subsection.11.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {11.3}Output}{10}{subsection.11.3}\protected@file@percent }
+\gdef \@abspage@last{10}
