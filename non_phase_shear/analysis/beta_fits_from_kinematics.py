@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO / 'python-scripts'))
 sys.path.insert(0, str(REPO / 'helpers'))
 import map_inference as mi
 from helpers import ImageShotDataset
-from run_manifest import log_run
+from run_manifest import log_run, guard_label_reuse
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument('dataset', help='dataset directory name under data/ (the run tag)')
@@ -44,6 +44,11 @@ LABEL = args.label or args.dataset
 GH_ORDER = 12
 GH_CHUNK = 20
 BINS_BETA = 16
+
+_out_stem = f'beta_fits_{LABEL}_N{N_RUNS}_shots{N_SHOTS}'
+guard_label_reuse(OUT / 'results' / f'.{_out_stem}._label_config.json',
+                   current={'dataset': args.dataset, 'psmap_tag': args.psmap_tag},
+                   key_fields=['dataset', 'psmap_tag'])
 
 in_path = OUT / 'results' / f'kinematic_estimates_{LABEL}_N{N_RUNS}_shots{N_SHOTS}.json'
 with open(in_path) as f:

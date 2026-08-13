@@ -29,7 +29,7 @@ import pixel_acs_grad as pag
 from profile_cloud_nuisances import SurrogatePixelACS, SemiAnalyticPixelACS
 from helpers import ImageShotDataset
 from crb_signal import THETA_NAMES
-from run_manifest import log_run
+from run_manifest import log_run, guard_label_reuse
 
 p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 p.add_argument('dataset', help='dataset directory name under data/ (the run tag)')
@@ -128,6 +128,10 @@ def fit_theta_best(acs, n_g, n_e):
 
 out_path = OUT / 'results' / f'kinematic_estimates_{LABEL}_N{N_RUNS}_shots{N_SHOTS}.json'
 out_path.parent.mkdir(parents=True, exist_ok=True)
+
+guard_label_reuse(out_path.parent / f'.{out_path.stem}._label_config.json',
+                   current={'dataset': args.dataset, 'psmap_tag': args.psmap_tag},
+                   key_fields=['dataset', 'psmap_tag'])
 
 all_runs = {}
 t_start = time.perf_counter()

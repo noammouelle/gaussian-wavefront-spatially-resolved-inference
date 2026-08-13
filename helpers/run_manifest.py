@@ -33,3 +33,53 @@ def log_run(repo_root, stage, label, **fields):
     with open(manifest_path, 'a') as f:
         f.write(json.dumps(entry) + '\n')
     return manifest_path
+
+
+def guard_label_reuse(sidecar_path, current, key_fields):
+    """Refuse to silently overwrite output(s) tied to a --label whose
+    identifying config (e.g. which data/ dataset dir, which --psmap_tag)
+    has changed since the label was last used.
+
+    Short, free-text --label args (e.g. '1e6') are convenient but are not
+    otherwise tied to the actual dataset/PSMAP a script was run against --
+    reusing one against a different dataset silently overwrites the
+    previous JSON/figures with no error and no way to recover them (this is
+    the downstream-analysis analogue of the data/ directory-name collision
+    generate_data.py guards against; see _check_or_write_generation_config
+    there for the sibling of this function).
+
+    sidecar_path: a `<...>._label_config.json` path, conventionally placed
+        next to the output(s) this call is meant to protect (e.g.
+        alongside `results/kinematic_estimates_<label>_*.json`).
+    current: dict of the config values for THIS invocation.
+    key_fields: which keys of `current` must match a prior run under the
+        same sidecar_path; only these are compared (and stored), so callers
+        can pass unrelated bookkeeping through `current` without it
+        spuriously tripping the guard.
+
+    Aborts the process (sys.exit(1)) on a mismatch. Writes/updates the
+    sidecar on a clean pass (first use, or a matching re-use).
+    """
+    import sys
+    sidecar_path = Path(sidecar_path)
+    to_store = {k: current[k] for k in key_fields}
+
+    if sidecar_path.exists():
+        with open(sidecar_path) as f:
+            previous = json.load(f)
+        mismatches = [k for k in key_fields if previous.get(k) != to_store[k]]
+        if mismatches:
+            print(f'\nABORTING: {sidecar_path}\nrecords a different config than this invocation is '
+                  f'about to use for the same label. Mismatched key(s): {", ".join(mismatches)}.\n'
+                  f'  previous : { {k: previous.get(k) for k in mismatches} }\n'
+                  f'  current  : { {k: to_store[k] for k in mismatches} }\n'
+                  f'Continuing would silently overwrite output(s) generated under the previous '
+                  f'config with no way to recover them. Use a different --label for this config, '
+                  f'or delete {sidecar_path.name} if you are deliberately regenerating from '
+                  f'scratch under the same label.', file=sys.stderr)
+            sys.exit(1)
+        return
+
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(sidecar_path, 'w') as f:
+        json.dump(to_store, f, indent=2)
