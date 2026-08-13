@@ -54,6 +54,42 @@ from generate_wavefront import (
 )
 
 
+def amplitude_weighted_phase_rms(report, reference_grid, core_threshold=1e-2):
+    """Re-derive phase_rms from report's per-point samples/errors, but
+    weighted by the REFERENCE grid's local field intensity (and, separately,
+    restricted to a "core" mask where amplitude exceeds core_threshold *
+    peak amplitude).
+
+    Why: GridConvergenceValidator's raw phase_rms is an unweighted average
+    over every sampled point in the grids' overlap region, including the
+    beam's far wings where amplitude is numerically ~0. The phase of a
+    near-zero complex number is dominated by roundoff/FFT artifacts, not
+    physical signal -- so those points contribute noise to phase_rms that
+    does not need to shrink monotonically with resolution (can even grow,
+    since finer grids place more points deeper into that meaningless-phase
+    region). The intensity-weighted and core-masked versions here suppress
+    that contamination and better reflect what the grid resolution actually
+    does to the physically meaningful (non-negligible amplitude) part of
+    the field.
+    """
+    ref_amp = reference_grid.amplitude
+    peak_amp = float(np.max(ref_amp))
+    out = []
+    for row in report.rows:
+        comp = row['comparison']
+        pts = report.samples[comp]
+        phase_err = report.errors[comp]['phase_error']
+        amp = reference_grid.evaluate(pts[:, 0], pts[:, 1], pts[:, 2], quantity='amplitude', bounds_policy='clip')
+        amp = np.asarray(amp)
+        weight = amp ** 2
+        intensity_weighted_rms = float(np.sqrt(np.sum(weight * phase_err ** 2) / np.sum(weight))) if np.sum(weight) > 0 else float('nan')
+        core_mask = amp > core_threshold * peak_amp
+        core_rms = float(np.sqrt(np.mean(phase_err[core_mask] ** 2))) if core_mask.any() else float('nan')
+        out.append({'comparison': comp, 'phase_rms_intensity_weighted': intensity_weighted_rms,
+                     'phase_rms_core': core_rms, 'core_fraction': float(core_mask.mean())})
+    return out
+
+
 def build_up_field(grid, wavelength, waist, focus_z, mirror_z, modes, zterms, propagator_name, backend):
     """Same construction as generate_wavefront.py's up beam: aberration
     imprinted at the mirror plane, then propagated to the rest of grid.z."""
@@ -150,13 +186,21 @@ def main():
 
     validator = GridConvergenceValidator(grids, labels=labels, reference='finest')
     report = validator.compare_to_reference()
+    weighted_rows = amplitude_weighted_phase_rms(report, grids[-1])
     print()
     print(report.summary())
-    print('\nNote: amplitude_relative_rms/max can look huge near the beam\'s low-'
-          'amplitude wings (relative error blows up dividing by ~0 amplitude) --\n'
-          'this is a metric artifact of the far tails, not evidence the grid is bad.'
-          ' phase_rms is the metric that matters for this pipeline (it\'s what'
-          '\nfeeds the PSMAP dphi), and is not sensitive to this issue.')
+    print('\nCorrected phase_rms (weighted by the finest grid\'s local field intensity, and '
+          'restricted to a "core" mask where amplitude > 1% of peak):')
+    for row in weighted_rows:
+        print(f"  {row['comparison']}: phase_rms_intensity_weighted={row['phase_rms_intensity_weighted']:.6e}, "
+              f"phase_rms_core={row['phase_rms_core']:.6e} (core_fraction={row['core_fraction']:.3f} of sampled points)")
+    print('\nNote: both amplitude_relative_rms above AND the raw phase_rms above can look huge near '
+          'the beam\'s low-amplitude wings -- the phase of a numerically ~0 complex amplitude is '
+          'dominated by roundoff/FFT artifacts, not physical signal, and does not need to shrink '
+          'monotonically with resolution (can even grow, since finer grids sample more points deeper '
+          'into that meaningless-phase region). This is a metric artifact of the far tails, not '
+          'evidence the grid is bad -- the corrected phase_rms above is what actually reflects '
+          'resolution quality in the illuminated region that matters for the PSMAP dphi.')
 
     if args.verbose and len(grids) > 1:
         pairwise = validator.pairwise_convergence()
@@ -169,13 +213,21 @@ def main():
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
     report.plot_metric('phase_rms', ax=axes[0])
-    axes[0].set_title('Phase RMS error vs. finest grid')
+    axes[0].set_title('Raw phase RMS error vs. finest grid\n(contaminated by low-amplitude tail phase noise)')
     axes[0].set_yscale('log')
     report.plot_metric('amplitude_relative_rms', ax=axes[1])
     axes[1].set_title('Amplitude relative RMS error vs. finest grid')
     axes[1].set_yscale('log')
+    axes[2].plot([r['comparison'] for r in weighted_rows], [r['phase_rms_core'] for r in weighted_rows],
+                 'o-', label='core (amp > 1% peak)')
+    axes[2].plot([r['comparison'] for r in weighted_rows], [r['phase_rms_intensity_weighted'] for r in weighted_rows],
+                 's-', label='intensity-weighted')
+    axes[2].set_title('Corrected phase RMS vs. finest grid')
+    axes[2].set_yscale('log')
+    axes[2].legend(fontsize=8)
+    axes[2].tick_params(axis='x', rotation=30)
     fig.tight_layout()
     fig.savefig(args.out, dpi=140)
     print(f'\nSaved {args.out}')
@@ -187,6 +239,8 @@ def main():
             zernike_random_spec=args.zernike_random,
             resolutions=labels, phase_rms=[row['phase_rms'] for row in report.rows],
             amplitude_relative_rms=[row['amplitude_relative_rms'] for row in report.rows],
+            phase_rms_intensity_weighted=[row['phase_rms_intensity_weighted'] for row in weighted_rows],
+            phase_rms_core=[row['phase_rms_core'] for row in weighted_rows],
             worst_edge_ratio=worst_edge_ratio, out=args.out)
     print('DONE')
 

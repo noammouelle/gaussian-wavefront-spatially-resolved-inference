@@ -280,14 +280,26 @@ python convergence_check.py --zernike noll=4 amp=0.05 \
     --nxy 5 9 17 33 --nz 41 81 161 321
 ```
 Compares increasingly fine grids against the finest one (self-consistency
-under refinement -- not proof the finest grid is exact). Watch `phase_rms`
-in the printed report and `convergence_report.png`; `amplitude_relative_rms`
-is not a useful metric here (it blows up in the beam's low-amplitude wings
-where dividing by ~0 amplitude dominates the "relative" error -- see the
-script's own printed note). Higher spatial-frequency `--mode`/`--zernike`
-terms need finer grids to resolve; there's no universally-correct default
-resolution. This also runs the same edge-amplitude check as
-`generate_wavefront.py` and warns if it fails at any tested resolution.
+under refinement -- not proof the finest grid is exact). **Don't watch the
+raw `phase_rms`** -- both it and `amplitude_relative_rms` blow up in the
+beam's low-amplitude wings, where the phase of a numerically ~0 complex
+amplitude is dominated by roundoff/FFT artifacts rather than physical
+signal. This isn't just cosmetically large: it's *non-monotonic with
+resolution* (can visibly increase between two runs that are both getting
+better), because finer grids sample more points deeper into that
+meaningless-phase region -- and it dominates the raw metric badly enough
+that a genuinely well-converged field (physically converging cleanly in
+the illuminated region) can look like it never converges at all if you
+only look at the raw number. Watch `phase_rms_core` and
+`phase_rms_intensity_weighted` in the printed "Corrected phase_rms" block
+and the third panel of `convergence_report.png` instead -- these mask/weight
+out the low-amplitude tail and shrink smoothly and monotonically with
+resolution for the same field where the raw metric was noisy or
+increasing. Higher spatial-frequency `--mode`/`--zernike` terms (higher
+Noll order, or `--zernike_random` draws with a high `max_noll`) need finer
+grids to resolve; there's no universally-correct default resolution. This
+also runs the same edge-amplitude check as `generate_wavefront.py` and
+warns if it fails at any tested resolution.
 
 Then look at it:
 ```bash
