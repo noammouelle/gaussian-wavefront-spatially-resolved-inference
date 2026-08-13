@@ -15,6 +15,7 @@ must match --label used in generate_kinematic_estimates.py.
 """
 import argparse
 import json
+import time
 from pathlib import Path
 import numpy as np
 import matplotlib
@@ -31,7 +32,11 @@ p.add_argument('labels', nargs='*', default=['1e6', '1e8'],
                 help='dataset labels to compare (default: 1e6 1e8)')
 p.add_argument('--n_runs', type=int, default=10)
 p.add_argument('--n_shots', type=int, default=50)
+p.add_argument('--verbose', '-v', action='store_true',
+                help='print resolved config up front and per-pair/method correlation and '
+                     'timing while building the figures')
 args = p.parse_args()
+VERBOSE = args.verbose
 
 THETA_NAMES = ['mu_x0', 'mu_y0', 'mu_vx0', 'mu_vy0', 'sigma_x', 'sigma_y', 'sigma_vx', 'sigma_vy']
 THETA_LABELS = {n: l for n, l in zip(THETA_NAMES,
@@ -72,7 +77,11 @@ def compute_residuals(kin_data, method):
     return np.array(residuals)
 
 
+if VERBOSE:
+    print(f'labels={DATASETS}  n_runs={N_RUNS}  n_shots={N_SHOTS}')
+
 for dataset in DATASETS:
+    t0 = time.perf_counter()
     kin = load_kinematics(dataset)
     res_by_method = {m: compute_residuals(kin, m) for m in METHODS}
 
@@ -104,6 +113,9 @@ for dataset in DATASETS:
                 ax.text(0.5, 0.5, f'(contour failed: {e})', transform=ax.transAxes, fontsize=7, ha='center')
 
             corr = np.corrcoef(x_r, y_r)[0, 1]
+            if VERBOSE:
+                print(f'  {dataset} ({px},{py}) [{method}]: r={corr:.3f}  '
+                      f'{len(x_r)}/{len(x)} points in range')
             ax.axhline(0, color='k', linewidth=0.5, linestyle=':')
             ax.axvline(0, color='k', linewidth=0.5, linestyle=':')
             ax.set_xlim(xlim); ax.set_ylim(ylim)
@@ -116,6 +128,7 @@ for dataset in DATASETS:
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(FIG_DIR / f'residuals_2d_{dataset}.png', dpi=140)
     plt.close(fig)
-    print(f'Saved residuals_2d_{dataset}.png', flush=True)
+    timing = f'  ({time.perf_counter() - t0:.1f}s)' if VERBOSE else ''
+    print(f'Saved residuals_2d_{dataset}.png{timing}', flush=True)
 
 print('DONE')

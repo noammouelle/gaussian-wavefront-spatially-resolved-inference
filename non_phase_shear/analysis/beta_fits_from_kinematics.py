@@ -12,7 +12,7 @@ Same <dataset_dir_under_data/>/--label convention as
 generate_kinematic_estimates.py -- pass the same dataset and label used
 there so this picks up the matching kinematic_estimates_<label>_*.json.
 """
-import argparse, sys, json
+import argparse, sys, json, time
 from pathlib import Path
 import numpy as np
 from scipy.optimize import minimize
@@ -35,11 +35,16 @@ p.add_argument('--psmap_tag', default='CONFOCAL_FINE',
                      "should match the PSMAP the dataset was actually generated "
                      "under (generate_data.py --psmap_tag), not necessarily what "
                      "generate_kinematic_estimates.py used for theta fitting")
+p.add_argument('--verbose', '-v', action='store_true',
+                help='print resolved config up front and per-run timing (beta fitting is '
+                     'GH-batched across shots, so per-shot progress is not meaningful here -- '
+                     'per-run/per-method is the finest useful granularity)')
 args = p.parse_args()
 
 N_RUNS = args.n_runs
 N_SHOTS = args.n_shots
 LABEL = args.label or args.dataset
+VERBOSE = args.verbose
 
 GH_ORDER = 12
 GH_CHUNK = 20
@@ -55,6 +60,12 @@ with open(in_path) as f:
     data = json.load(f)
 run_names = sorted(data.keys())
 print(f'Loaded {len(run_names)} runs from {in_path}', flush=True)
+
+if VERBOSE:
+    print(f'dataset={args.dataset}  label={LABEL}  psmap_tag={args.psmap_tag}')
+    print(f'n_runs={N_RUNS}  n_shots={N_SHOTS}  gh_order={GH_ORDER}  '
+          f'gh_chunk={GH_CHUNK}  bins_beta={BINS_BETA}')
+    print(f'run_names: {run_names}')
 
 data_root = REPO / 'data' / args.dataset
 run_dir0 = sorted(data_root.glob('run_*'))[0]
@@ -106,14 +117,16 @@ for run_name in run_names:
     shot_idx_arr = np.arange(len(shots), dtype=np.float64)
 
     for method in METHODS:
+        t0 = time.perf_counter()
         eta_z0_list = [theta_to_eta(np.array(s[f'theta_{method}_z0'])) for s in shots]
         eta_z100_list = [theta_to_eta(np.array(s[f'theta_{method}_z100'])) for s in shots]
         beta_hat = fit_beta_given_eta(eta_z0_list, eta_z100_list, n_g0_arr, n_e0_arr, n_g1_arr, n_e1_arr,
                                        run['f_signal'], shot_idx_arr)
         results[method].append(dict(run=run_name, As_true=run['As_true'], Ac_true=run['Ac_true'],
                                      beta=beta_hat.tolist()))
+        timing = f'  ({time.perf_counter() - t0:.1f}s)' if VERBOSE else ''
         print(f'{LABEL} {run_name} [{method}]: beta_hat={beta_hat}  '
-              f'true=({run["As_true"]:.5f},{run["Ac_true"]:.5f})', flush=True)
+              f'true=({run["As_true"]:.5f},{run["Ac_true"]:.5f}){timing}', flush=True)
 
 out_path = OUT / 'results' / f'beta_fits_{LABEL}_N{N_RUNS}_shots{N_SHOTS}.json'
 with open(out_path, 'w') as f:

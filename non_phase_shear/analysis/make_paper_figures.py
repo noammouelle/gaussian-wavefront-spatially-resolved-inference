@@ -14,6 +14,7 @@ Writes: figures/*.png, results/paper_tables.txt
 """
 import argparse
 import json
+import time
 from pathlib import Path
 import numpy as np
 import matplotlib
@@ -29,7 +30,11 @@ p.add_argument('labels', nargs='*', default=['1e6', '1e8'],
                 help='dataset labels to compare (default: 1e6 1e8)')
 p.add_argument('--n_runs', type=int, default=10)
 p.add_argument('--n_shots', type=int, default=50)
+p.add_argument('--verbose', '-v', action='store_true',
+                help='print resolved config up front and per-panel diagnostics '
+                     '(axis ranges, points in/out of range) while building the figures')
 args = p.parse_args()
+VERBOSE = args.verbose
 
 THETA_NAMES = ['mu_x0', 'mu_y0', 'mu_vx0', 'mu_vy0', 'sigma_x', 'sigma_y', 'sigma_vx', 'sigma_vy']
 THETA_LABELS = [r'$\mu_{x0}$', r'$\mu_{y0}$', r'$\mu_{vx0}$', r'$\mu_{vy0}$',
@@ -71,8 +76,12 @@ def compute_rmse_table(kin_data, method):
     return np.sqrt((res**2).mean(axis=0))
 
 
+if VERBOSE:
+    print(f'labels={DATASETS}  n_runs={N_RUNS}  n_shots={N_SHOTS}')
+
 # ============ Figure 1: residual plots (one figure per dataset) ============
 for dataset in DATASETS:
+    t0 = time.perf_counter()
     kin = load_kinematics(dataset)
     res_by_method = {m: compute_residuals(kin, m) for m in METHODS}
     fig, axes = plt.subplots(2, 4, figsize=(20, 9))
@@ -88,6 +97,9 @@ for dataset in DATASETS:
         for method in METHODS:
             res = res_by_method[method][:, k]
             in_range = res[(res >= xlim[0]) & (res <= xlim[1])]
+            if VERBOSE:
+                print(f'  {dataset} {THETA_NAMES[k]} [{method}]: xlim=({xlim[0]:.3e},{xlim[1]:.3e})  '
+                      f'{len(in_range)}/{len(res)} points in range')
             ax.hist(in_range, bins=50, range=xlim, histtype='step', density=True, linewidth=1.8,
                     color=METHOD_COLORS[method], label=METHOD_LABELS[method])
         ax.set_xlim(xlim)
@@ -100,10 +112,12 @@ for dataset in DATASETS:
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(FIG_DIR / f'residuals_{dataset}.png', dpi=150)
     plt.close(fig)
-    print(f'Saved residuals_{dataset}.png', flush=True)
+    timing = f'  ({time.perf_counter() - t0:.1f}s)' if VERBOSE else ''
+    print(f'Saved residuals_{dataset}.png{timing}', flush=True)
 
 # ============ Figure 2: beta scatter plots (one figure per dataset) ============
 for dataset in DATASETS:
+    t0 = time.perf_counter()
     beta_data = load_beta_fits(dataset)
     fig, axes = plt.subplots(1, 4, figsize=(20, 5), sharex=True, sharey=True)
     for i, method in enumerate(METHODS):
@@ -123,7 +137,8 @@ for dataset in DATASETS:
     fig.tight_layout(rect=[0, 0, 1, 0.94])
     fig.savefig(FIG_DIR / f'beta_scatter_{dataset}.png', dpi=150)
     plt.close(fig)
-    print(f'Saved beta_scatter_{dataset}.png', flush=True)
+    timing = f'  ({time.perf_counter() - t0:.1f}s)' if VERBOSE else ''
+    print(f'Saved beta_scatter_{dataset}.png{timing}', flush=True)
 
 # ============ Tables ============
 lines = []

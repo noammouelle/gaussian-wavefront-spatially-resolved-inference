@@ -40,11 +40,16 @@ p.add_argument('--psmap_tag', default='CONFOCAL_FINE',
                 help="PSMAP tag: reads output-files/PSGRID4D_<tag>_Z{0,100}.h5 "
                      "(default: the analytic confocal beam; use a tag from "
                      "phase_space_grids.py --tag for an arbitrary-wavefront PSMAP)")
+p.add_argument('--verbose', '-v', action='store_true',
+                help='print resolved config up front and per-shot progress/ETA within each '
+                     'run (the per-shot "best" pixel-likelihood fit is the slow step and is '
+                     'otherwise silent until the whole run finishes)')
 args = p.parse_args()
 
 N_RUNS = args.n_runs
 N_SHOTS = args.n_shots
 LABEL = args.label or args.dataset
+VERBOSE = args.verbose
 
 prior_mean = np.array([0., 0., 0., 0., 100e-6, 100e-6, 100e-6, 100e-6])
 prior_std = np.array([10e-6] * 8)
@@ -58,6 +63,12 @@ M_PHI = 2000
 data_root = REPO / 'data' / args.dataset
 run_dirs = sorted(data_root.glob('run_*'))[:N_RUNS]
 assert run_dirs, f'no run_* dirs found under {data_root}'
+
+if VERBOSE:
+    print(f'dataset={args.dataset}  label={LABEL}  psmap_tag={args.psmap_tag}')
+    print(f'n_runs={N_RUNS}  n_shots={N_SHOTS}  bins_best={BINS_BEST}  '
+          f'tight_half_range={TIGHT_HALF_RANGE:.3e}  pixel_ngh={PIXEL_NGH}  m_phi={M_PHI}')
+    print(f'run_dirs: {[d.name for d in run_dirs]}')
 
 # --- best-config (pixel-likelihood, bins=32, tight range) evaluators ---
 edges_tight = np.linspace(-TIGHT_HALF_RANGE, TIGHT_HALF_RANGE, BINS_BEST + 1)
@@ -149,6 +160,12 @@ for run_dir in run_dirs:
 
     shots = []
     for i in range(N_SHOTS):
+        if VERBOSE and (i % 10 == 0 or i == N_SHOTS - 1) and i > 0:
+            elapsed = time.perf_counter() - t_run0
+            per_shot = elapsed / i
+            eta = per_shot * (N_SHOTS - i)
+            print(f'  {LABEL} {run_name}: [{i}/{N_SHOTS}]  {per_shot:.2f}s/shot  '
+                  f'elapsed={elapsed:.0f}s  ETA={eta:.0f}s', flush=True)
         img0 = ds_z0[i]; img1 = ds_z100[i]
         n_g0_full = img0[0].astype(np.float64); n_e0_full = img0[1].astype(np.float64)
         n_g1_full = img1[0].astype(np.float64); n_e1_full = img1[1].astype(np.float64)
