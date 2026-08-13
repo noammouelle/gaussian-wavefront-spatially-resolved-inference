@@ -216,22 +216,67 @@ up beam   = GaussianBeam(...) + phase_perturbation(x, y)    (aberrated)
 
 ### Step 1: build and visualise the wavefront (`optics/`)
 
+Two aberration bases, combinable and summed at the mirror plane:
+
 ```bash
 cd optics
 python generate_wavefront.py --tag my_wavefront \
+    --zernike noll=4 amp=0.05 \
     --mode qx=1571 qy=0 amp=0.15 phase=0 \
     --nx 9 --ny 9 --nz 401 --zlim -5 25
 ```
-`--mode` is a Fourier mode (`qx`, `qy` in rad/m, `amp` in rad, `phase` in
-rad); repeat `--mode` for a sum of several. Omit `--mode` entirely for a
-flat (unaberrated) mirror -- useful as a sanity check that
-`wtype=interpolated` reproduces the analytic confocal/gaussian result.
-Writes `optics/fields/my_wavefront_{down,up}.h5`.
+- `--mode`: Fourier mode (`qx`, `qy` in rad/m, `amp` in rad, `phase` in
+  rad). Repeat for a sum of several.
+- `--zernike`: Zernike polynomial term (`noll=<Noll index>`, `amp=<rad>`,
+  same Noll-index/normalisation convention as `ais++`'s native
+  `zernikecoeff_N` -- see `aisoptics.ZernikeAberration`'s docstring).
+  Repeat for a sum of several. `--beam_radius` sets the aperture
+  (`rho = r/beam_radius`; must stay <= your `--xlim`/`--ylim`, see below).
+
+Omit both entirely for a flat (unaberrated) mirror -- useful as a sanity
+check that `wtype=interpolated` reproduces the analytic confocal/gaussian
+result. Writes `optics/fields/my_wavefront_{down,up}.h5`.
+
+**How the aberration actually gets applied -- this matters, read before
+using**: the aberration (Zernike and/or Fourier) is imprinted **only at
+the mirror plane** (`--mirror_z`, default = `--focus_z`), then the whole
+field is **propagated** (Fresnel/paraxial, via `aisoptics.ParaxialPropagator`)
+to every other z the grid covers. This is deliberately *not* how
+`ais++`'s own native `wtype=confocal zernikecoeff_N` works -- that applies
+the identical transverse pattern at whatever z the atom happens to be at,
+with no z-dependence at all (`GetZernikePhase` only reads `pos[0]`,
+`pos[1]`). A real aberrated wavefront diffracts away from where it was
+imprinted; the rigid native version silently assumes it doesn't. Passing
+the same coefficient to both paths should agree closely right at the
+mirror and diverge with distance -- `optics/notebooks/wavefront_visualization.ipynb`'s
+last section demonstrates this directly (and is how this was validated
+during development: propagated field reproduces the imprinted pattern to
+~1e-9 rad exactly at the mirror plane, and the RMS deviation from that
+rigid pattern grows monotonically and measurably, though slowly, with
+distance -- consistent with the beam's own Fresnel length, ~1300 m for the
+default waist/wavelength, being much longer than the ~25 m tested).
+
+**Two easy-to-hit failure modes, both checked automatically (the script
+warns; it does not silently produce garbage without saying so)**:
+- *Zernike aperture vs. grid extent*: `rho = r/beam_radius` is only
+  physically meaningful for `rho <= 1`. If `--xlim`/`--ylim` extend past
+  `--beam_radius`, points outside the aperture get large/unphysical raw
+  polynomial values, not an error -- keep `--beam_radius >= half of your
+  --xlim/--ylim span`.
+- *FFT periodic-boundary aliasing*: both propagators are FFT-based, which
+  implicitly assumes the field is periodic across the transverse grid. If
+  the beam's amplitude hasn't decayed to ~0 by the `--xlim`/`--ylim` edge,
+  the propagation wraps around and corrupts the result with no error --
+  only a warning if the edge/peak amplitude ratio exceeds 1e-3. This is
+  set by the **Gaussian beam's waist**, not by `--beam_radius` -- the
+  defaults (`--xlim`/`--ylim` = 3x `--waist`) satisfy it (edge ratio
+  ~1e-4); shrinking `--xlim`/`--ylim` to match a small `--beam_radius`
+  (rather than the waist) is exactly how to reintroduce this bug.
 
 **Before trusting a grid resolution**, check it's actually resolved the
-wavefront you asked for:
+wavefront (and its propagation) you asked for:
 ```bash
-python convergence_check.py --mode qx=1571 qy=0 amp=0.15 phase=0 \
+python convergence_check.py --zernike noll=4 amp=0.05 \
     --nxy 5 9 17 33 --nz 41 81 161 321
 ```
 Compares increasingly fine grids against the finest one (self-consistency
@@ -239,17 +284,19 @@ under refinement -- not proof the finest grid is exact). Watch `phase_rms`
 in the printed report and `convergence_report.png`; `amplitude_relative_rms`
 is not a useful metric here (it blows up in the beam's low-amplitude wings
 where dividing by ~0 amplitude dominates the "relative" error -- see the
-script's own printed note). Higher spatial-frequency `--mode`s need finer
-grids to resolve; there's no universally-correct default resolution.
+script's own printed note). Higher spatial-frequency `--mode`/`--zernike`
+terms need finer grids to resolve; there's no universally-correct default
+resolution. This also runs the same edge-amplitude check as
+`generate_wavefront.py` and warns if it fails at any tested resolution.
 
 Then look at it:
 ```bash
 jupyter notebook optics/notebooks/wavefront_visualization.ipynb
 ```
-Edit the `MODES`/grid config cell to match what you generated. Shows phase
-+ amplitude at the mirror plane for both beams, the isolated aberration
-(up minus down, checked against the analytic Fourier-mode sum), and a 3D
-surface.
+Edit the `MODES`/`ZTERMS`/grid config cell to match what you generated.
+Shows phase + amplitude at the mirror plane for both beams, the isolated
+aberration (up minus down, checked against the analytic formula), a 3D
+surface, and the propagation-vs-distance demonstration described above.
 
 **z-range matters**: the grid must cover wherever the atom actually is when
 a pulse fires. `phase_space_grids.py` launches atoms from `z0=0` (bottom

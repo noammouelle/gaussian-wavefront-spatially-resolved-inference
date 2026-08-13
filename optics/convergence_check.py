@@ -2,18 +2,20 @@
 convergence_check.py — grid self-convergence check for a wavefront field,
 before trusting it for a real PSMAP generation run.
 
-Samples the SAME field (Gaussian + aberration modes, same convention as
-generate_wavefront.py) at several increasing grid resolutions, and uses
+Builds the UP (aberrated) field the same way generate_wavefront.py does --
+aberration imprinted at --mirror_z, then propagated (Fresnel/paraxial) to
+the rest of the grid -- at several increasing grid resolutions, and uses
 aisoptics.GridConvergenceValidator to check that coarser grids agree with
 the finest one in their overlap region. This validates self-consistency
 under refinement -- it does NOT prove the finest grid is physically exact,
 only that you've resolved the spatial structure of the field you asked for
-(no default resolution is correct for every choice of --mode; a
-high-spatial-frequency aberration needs a finer grid than a smooth one).
+(no default resolution is correct for every choice of --mode/--zernike; a
+high-spatial-frequency aberration needs a finer grid than a smooth one, and
+propagation adds its own resolution requirement on top).
 
 Usage
 -----
-    python convergence_check.py --mode qx=1571 qy=0 amp=0.15 phase=0 \\
+    python convergence_check.py --zernike noll=4 amp=0.05 \\
         --nxy 5 9 17 33 --nz 41 81 161 321
 
     # sanity check with no aberration (should converge trivially / near-exactly)
@@ -35,10 +37,40 @@ from run_manifest import log_run
 sys.path.insert(0, str(REPO.parent / 'local' / 'aispy'))
 from aispy.utils import kz as AISPY_KZ  # noqa: E402
 
-from aisoptics import Backend, GaussianBeam, GridSpec, CompositeField, GridConvergenceValidator
-from aisoptics.fields.perturbations import FourierModePerturbation, FourierPerturbation
+from aisoptics import Backend, GaussianBeam, GridSpec, FieldPlane, GridConvergenceValidator
+from aisoptics import ParaxialPropagator, AngularSpectrumPropagator
+from aisoptics.fields.perturbations import FourierPerturbation, ZernikeSum
 
-from generate_wavefront import parse_mode, DEFAULT_WAVELENGTH, DEFAULT_WAIST
+from generate_wavefront import (
+    parse_mode, parse_zernike, DEFAULT_WAVELENGTH, DEFAULT_WAIST, DEFAULT_BEAM_RADIUS, PROPAGATORS,
+)
+
+
+def build_up_field(grid, wavelength, waist, focus_z, mirror_z, modes, zterms, propagator_name, backend):
+    """Same construction as generate_wavefront.py's up beam: aberration
+    imprinted at the mirror plane, then propagated to the rest of grid.z."""
+    X, Y = np.meshgrid(grid.x, grid.y, indexing='ij')
+    up_beam_ref = GaussianBeam(wavelength=wavelength, waist=waist, focus_z=focus_z,
+                                propagation_direction="+z", backend=backend)
+    perfect_at_mirror = up_beam_ref.complex_amplitude(X, Y, mirror_z * np.ones_like(X))
+
+    aberration_phase = np.zeros_like(X)
+    if zterms:
+        aberration_phase = aberration_phase + ZernikeSum(zterms).value(X, Y, mirror_z)
+    if modes:
+        aberration_phase = aberration_phase + FourierPerturbation(modes=modes).value(X, Y, mirror_z)
+
+    aberrated_at_mirror = perfect_at_mirror * np.exp(1j * aberration_phase)
+
+    edge_amp = np.abs(np.concatenate([aberrated_at_mirror[0, :], aberrated_at_mirror[-1, :],
+                                       aberrated_at_mirror[:, 0], aberrated_at_mirror[:, -1]])).max()
+    peak_amp = np.abs(aberrated_at_mirror).max()
+    edge_ratio = edge_amp / peak_amp if peak_amp > 0 else 0.0
+
+    plane = FieldPlane(x=grid.x, y=grid.y, values=aberrated_at_mirror, z0=mirror_z,
+                        wavelength=wavelength, backend=backend)
+    field_up = PROPAGATORS[propagator_name]().propagate_to_many(plane, grid.z)
+    return field_up, edge_ratio
 
 
 def main():
@@ -46,8 +78,13 @@ def main():
     p.add_argument('--wavelength', type=float, default=DEFAULT_WAVELENGTH)
     p.add_argument('--waist', type=float, default=DEFAULT_WAIST)
     p.add_argument('--focus_z', type=float, default=0.0)
+    p.add_argument('--mirror_z', type=float, default=None, help='default: same as --focus_z')
+    p.add_argument('--beam_radius', type=float, default=DEFAULT_BEAM_RADIUS)
+    p.add_argument('--propagator', choices=list(PROPAGATORS), default='paraxial')
     p.add_argument('--mode', nargs='+', action='append', default=[],
                     help="see generate_wavefront.py --mode; checks the UP (aberrated) field")
+    p.add_argument('--zernike', nargs='+', action='append', default=[],
+                    help="see generate_wavefront.py --zernike")
     p.add_argument('--xlim', type=float, nargs=2, default=(-0.03, 0.03))
     p.add_argument('--ylim', type=float, nargs=2, default=(-0.03, 0.03))
     p.add_argument('--zlim', type=float, nargs=2, default=(-5.0, 20.0))
@@ -58,26 +95,34 @@ def main():
 
     if len(args.nxy) != len(args.nz):
         p.error('--nxy and --nz must have the same length')
+    mirror_z = args.focus_z if args.mirror_z is None else args.mirror_z
     order = np.argsort(args.nxy)
     nxy_list = [args.nxy[i] for i in order]
     nz_list = [args.nz[i] for i in order]
 
     backend = Backend("numpy")
-    beam = GaussianBeam(wavelength=args.wavelength, waist=args.waist, focus_z=args.focus_z,
-                         propagation_direction="+z", backend=backend)
     modes = [parse_mode(m) for m in args.mode]
-    field_obj = CompositeField(reference=beam, phase_perturbation=FourierPerturbation(modes=modes), mode="exact") \
-        if modes else beam
+    zterms = [parse_zernike(z, args.beam_radius) for z in args.zernike]
 
-    print(f'{len(modes)} aberration mode(s), {len(nxy_list)} resolutions: ' +
+    print(f'{len(modes)} Fourier mode(s), {len(zterms)} Zernike term(s), {len(nxy_list)} resolutions: ' +
           ', '.join(f'({nxy}x{nxy}x{nz})' for nxy, nz in zip(nxy_list, nz_list)))
 
     grids, labels = [], []
+    worst_edge_ratio = 0.0
     for nxy, nz in zip(nxy_list, nz_list):
         grid_spec = GridSpec.from_bounds(xlim=tuple(args.xlim), ylim=tuple(args.ylim), zlim=tuple(args.zlim),
                                           shape=(nxy, nxy, nz))
-        grids.append(field_obj.sample(grid_spec))
+        field_up, edge_ratio = build_up_field(grid_spec, args.wavelength, args.waist, args.focus_z, mirror_z,
+                                               modes, zterms, args.propagator, backend)
+        worst_edge_ratio = max(worst_edge_ratio, edge_ratio)
+        grids.append(field_up)
         labels.append(f'{nxy}x{nxy}x{nz}')
+
+    if worst_edge_ratio > 1e-3:
+        print(f'\nWARNING: field amplitude at the --xlim/--ylim edge reaches {worst_edge_ratio:.2e} of the '
+              f'peak (want << 1e-3) for at least one resolution tested. FFT-based propagation assumes '
+              f'periodic boundaries -- results below may be corrupted by wrap-around aliasing rather than '
+              f'reflecting real convergence behaviour. Widen --xlim/--ylim relative to --waist.\n')
 
     validator = GridConvergenceValidator(grids, labels=labels, reference='finest')
     report = validator.compare_to_reference()
@@ -102,11 +147,12 @@ def main():
     print(f'\nSaved {args.out}')
 
     log_run(REPO, 'convergence_check', labels[-1],
-            wavelength=args.wavelength, waist=args.waist, focus_z=args.focus_z,
-            modes=[(m.qx, m.qy, m.amplitude, m.phase) for m in modes],
+            wavelength=args.wavelength, waist=args.waist, focus_z=args.focus_z, mirror_z=mirror_z,
+            propagator=args.propagator, modes=[(m.qx, m.qy, m.amplitude, m.phase) for m in modes],
+            zernike_terms=[(z.noll_index, z.amplitude) for z in zterms],
             resolutions=labels, phase_rms=[row['phase_rms'] for row in report.rows],
             amplitude_relative_rms=[row['amplitude_relative_rms'] for row in report.rows],
-            out=args.out)
+            worst_edge_ratio=worst_edge_ratio, out=args.out)
     print('DONE')
 
 
