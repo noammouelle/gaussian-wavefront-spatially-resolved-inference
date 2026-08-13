@@ -23,9 +23,16 @@ Usage
 
 --nxy and --nz must be the same length -- entry i is one grid resolution
 (nx=ny=nxy[i], nz=nz[i]), sorted automatically from coarsest to finest.
+
+--verbose/-v adds: per-resolution build time and edge-amplitude ratio as
+each grid is built, the full beam/grid config, and an adjacent-resolution
+comparison table (grid i vs. grid i+1) in addition to the default
+everything-vs-finest one -- useful for telling genuine convergence apart
+from a coincidental match to whichever grid was picked as reference.
 """
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -94,6 +101,9 @@ def main():
     p.add_argument('--nxy', type=int, nargs='+', required=True, help='nx=ny at each resolution to test')
     p.add_argument('--nz', type=int, nargs='+', required=True, help='nz at each resolution to test (same length as --nxy)')
     p.add_argument('--out', default=str(REPO / 'optics' / 'convergence_report.png'))
+    p.add_argument('--verbose', '-v', action='store_true',
+                    help='print per-resolution build time, edge-amplitude ratio, and the full '
+                         'pairwise comparison table (not just the vs-finest summary)')
     args = p.parse_args()
 
     if len(args.nxy) != len(args.nz):
@@ -112,13 +122,22 @@ def main():
     print(f'{len(modes)} Fourier mode(s), {len(zterms)} Zernike term(s), {len(nxy_list)} resolutions: ' +
           ', '.join(f'({nxy}x{nxy}x{nz})' for nxy, nz in zip(nxy_list, nz_list)))
 
+    if args.verbose:
+        print(f'wavelength={args.wavelength:.6g} m  waist={args.waist:.6g} m  focus_z={args.focus_z:g} m  '
+              f'mirror_z={mirror_z:g} m  beam_radius={args.beam_radius:g} m  propagator={args.propagator}')
+        print(f'xlim={tuple(args.xlim)}  ylim={tuple(args.ylim)}  zlim={tuple(args.zlim)}')
+
     grids, labels = [], []
     worst_edge_ratio = 0.0
     for nxy, nz in zip(nxy_list, nz_list):
         grid_spec = GridSpec.from_bounds(xlim=tuple(args.xlim), ylim=tuple(args.ylim), zlim=tuple(args.zlim),
                                           shape=(nxy, nxy, nz))
+        t0 = time.perf_counter()
         field_up, edge_ratio = build_up_field(grid_spec, args.wavelength, args.waist, args.focus_z, mirror_z,
                                                modes, zterms, args.propagator, backend)
+        elapsed = time.perf_counter() - t0
+        if args.verbose:
+            print(f'  {nxy}x{nxy}x{nz}: built in {elapsed:.2f}s, edge amplitude ratio = {edge_ratio:.2e}')
         worst_edge_ratio = max(worst_edge_ratio, edge_ratio)
         grids.append(field_up)
         labels.append(f'{nxy}x{nxy}x{nz}')
@@ -139,14 +158,24 @@ def main():
           ' phase_rms is the metric that matters for this pipeline (it\'s what'
           '\nfeeds the PSMAP dphi), and is not sensitive to this issue.')
 
+    if args.verbose and len(grids) > 1:
+        pairwise = validator.pairwise_convergence()
+        print('\nAdjacent-resolution comparison (each grid vs. the next-finer one, not vs. the '
+              'finest overall) -- a smoothly shrinking phase_rms down this table, not just the '
+              'vs-finest one above, is stronger evidence of genuine convergence rather than a '
+              'coincidental match to whichever grid happened to be picked as reference:')
+        print(pairwise.summary())
+
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
     report.plot_metric('phase_rms', ax=axes[0])
     axes[0].set_title('Phase RMS error vs. finest grid')
+    axes[0].set_yscale('log')
     report.plot_metric('amplitude_relative_rms', ax=axes[1])
     axes[1].set_title('Amplitude relative RMS error vs. finest grid')
+    axes[1].set_yscale('log')
     fig.tight_layout()
     fig.savefig(args.out, dpi=140)
     print(f'\nSaved {args.out}')
