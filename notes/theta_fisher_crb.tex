@@ -6,6 +6,7 @@
 \usepackage{parskip}
 \usepackage{xcolor}
 \usepackage{graphicx}
+\usepackage{multirow}
 
 \geometry{margin=2.5cm}
 
@@ -302,6 +303,125 @@ still being a fundamentally single-shot statement (the CRB itself is a
 per-shot quantity, not one that shrinks with $N_{\rm shots}$) -- unlike
 $\beta$'s CRB, which genuinely does improve with shot count
 (\code{crb\_signal.py}'s \code{crb\_from\_j}/\code{simple\_scaling\_crb}).
+
+%%============================================================
+\section{From $\theta$-CRB to $\beta$-CRB}
+\label{sec:beta}
+%%============================================================
+
+\subsection{Method: propagating theta uncertainty into a phase-information number}
+\label{sec:beta-method}
+
+\code{crb\_signal.py}'s \code{per\_shot\_information} is exactly the
+theta-uncertainty-propagation step: it takes the same joint $17\times17$
+Fisher matrix $H$ used in \S\ref{sec:comparison} (over
+$\phi,\theta_{z0},\theta_{z100}$) and Schur-complements \emph{only} the 16
+theta directions out (not $\phi$), leaving a scalar effective per-shot phase
+information $j_{\rm eff}$ -- literally "how much information about the laser
+phase $\phi_i$ survives, after accounting for the fact that $\theta$ is
+unknown and must be estimated from the same image." Since
+$\delta\phi_i(\beta)=A_s\sin(2\pi f i)+A_c\cos(2\pi f i)$ enters only through
+$\phi_i$'s argument at $z100$, the $N$-shot Fisher matrix for
+$\beta=(A_s,A_c)$ is exactly $F_\beta=\sum_i j_i\,x_ix_i^\top$,
+$x_i=[\sin(2\pi fi),\cos(2\pi fi)]$ (\code{crb\_from\_j}), and
+${\rm CRB}(\beta)=F_\beta^{-1}$.
+
+\subsection{Converting to rad/$\sqrt{\rm shot}$ and rad/$\sqrt{\rm Hz}$}
+\label{sec:units}
+
+Two useful normalisations, both already implemented:
+
+\begin{itemize}
+  \item \textbf{rad/$\sqrt{\rm shot}$} (a shot-count-independent number).
+    When shots densely sample many signal periods ($\langle x_ix_i^\top
+    \rangle\to\tfrac12 I_2$, true here: $f=0.3$ cyc/shot over 50-200 shots is
+    15-60 periods), $F_\beta\approx(N j_{\rm bar}/2)I_2$, so
+    $\sigma_{A_s}=\sigma_{A_c}\approx\sqrt{2/(N j_{\rm bar})} =
+    \sigma_{\rm 1shot}/\sqrt N$ (\code{simple\_scaling\_crb}). $\sigma_{\rm
+    1shot}=\sqrt{2/j_{\rm bar}}$ is what "rad/$\sqrt{\rm shot}$" means: it is
+    the number such that the CRB at any shot count $N$ is
+    $\sigma_{\rm 1shot}/\sqrt N$ -- report this number once, and it answers
+    "what precision at $N$ shots" for any $N$ without recomputing anything.
+  \item \textbf{rad/$\sqrt{\rm Hz}$} (an amplitude spectral density, the
+    standard sensitivity unit in precision metrology). This requires one
+    more piece of information this codebase does not define anywhere: the
+    real shot \emph{repetition rate} $f_{\rm rep}$ (shots/second) -- every
+    frequency in this codebase (\code{--signal\_freq}) is in
+    cycles/\emph{shot}, not Hz, so there is no absolute time axis without
+    it. Given $f_{\rm rep}$, standard white-noise-ASD conversion applies:
+    \[
+      {\rm ASD} \;[{\rm rad}/\sqrt{\rm Hz}] \;=\; \sigma_{\rm 1shot}\;[{\rm
+      rad}] \times \sqrt{T_{\rm rep}} \;=\; \sigma_{\rm 1shot} /
+      \sqrt{f_{\rm rep}},\qquad T_{\rm rep}=1/f_{\rm rep}.
+    \]
+    (Same logic as converting a per-sample noise std to a PSD/ASD for any
+    white, sample-limited process: divide by $\sqrt{\text{sample rate}}$.
+    Valid here because each shot's $\theta_i,\phi_i$ are drawn independently
+    -- no shot-to-shot correlation to worry about.) $\sigma_{\rm 1shot}$ is
+    reported below; multiply by your own $f_{\rm rep}$ whenever you have
+    one.
+\end{itemize}
+
+Implementation: \code{python-scripts/beta\_crb\_vs\_empirical.py}. Uses a
+representative sample of shots (not all $N$) to estimate $j_{\rm bar}$
+(checked: relative shot-to-shot spread of $j$ is $\sim$9\% for \code{1e6},
+tight enough that treating $j_i\approx j_{\rm bar}$ for all $N$ shots when
+building $F_\beta$ via the real $x_i$ pattern is a good approximation, while
+avoiding an $O(N)$-shot Fisher-matrix cost).
+
+\subsection{Result: \code{1e6} (Gaussian beam)}
+\label{sec:beta-1e6}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+& $\sigma_{\rm 1shot}$ [rad] & CRB($N{=}50$) & Empirical ($N{=}50$, \code{best}) \\
+\midrule
+$A_s$ & \multirow{2}{*}{$1.14\times10^{-3}$} & $1.62\times10^{-4}$ & $4.95\times10^{-4}$ \\
+$A_c$ & & $1.62\times10^{-4}$ & $3.21\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\caption{$j_{\rm bar}=1.53\times10^6$ (rel.\ shot-to-shot spread $9\%$), 30
+sample shots. Ratio (empirical/CRB): $3.05\times$ ($A_s$), $1.99\times$
+($A_c$).}
+\end{table}
+
+\textbf{Unlike $\theta$'s own CRB (which matched to $\pm5\%$), $\beta$'s CRB
+under-predicts the empirical scatter by a real, substantial factor.} Checked
+and ruled out one concrete hypothesis before accepting this: rebuilt the CRB
+using \emph{exactly} \code{beta\_fits\_from\_kinematics.py}'s own evaluator
+geometry (\code{bins=16}, native half-range, vs.\ the tight/32-bin geometry
+used elsewhere in this note) -- $j_{\rm bar}$ changed by $<0.3\%$
+($1.523\times10^6$ vs.\ $1.526\times10^6$), so evaluator geometry is
+\emph{not} the explanation.
+
+\textbf{The actual explanation is structural.} \code{beta\_fits\_from\_kinematics.py}'s
+\code{best} method is a \emph{two-stage plug-in} estimator, not the
+idealised joint estimator this CRB models:
+\begin{enumerate}
+  \item Fit $\hat\theta_{\rm best}$ first (a point estimate -- whose own
+    scatter matches its CRB, \S\ref{sec:comparison}).
+  \item Convert to \code{crb\_signal.py}'s $\eta$ representation via
+    \code{theta\_to\_eta}, which \textbf{hardcodes two cross-terms to
+    zero}: \verb|[mu_x0, mu_vx0, mu_y0, mu_vy0, sx**2, |\textbf{\texttt{0.0}}\verb|, svx**2, sy**2, |\textbf{\texttt{0.0}}\verb|, svy**2]|
+    -- exactly the position-velocity covariance terms.
+  \item Fit $\beta$ from that fixed, cross-term-stripped $\eta$ -- $\theta$'s
+    uncertainty has already been collapsed to a point estimate and its
+    correlation structure discarded, not properly marginalised.
+\end{enumerate}
+This CRB assumes an efficient estimator that uses the full joint
+$(\phi,\theta,\beta)$ information optimally (Fisher-matrix elimination is
+the textbook-correct way to get the marginal CRB for \emph{an efficient}
+estimator). The real pipeline throws away exactly the correlation structure
+$\theta$ was shown to actually have (\S\ref{sec:ridge}'s ridge) partway
+through. A two-stage plug-in estimator falling short of the joint bound is a
+standard, expected effect, not a bug in either number -- the CRB is
+correctly a lower bound; this particular real pipeline doesn't saturate it.
+
+\code{1e8} and the aberrated dataset are pending (see \S\ref{sec:open}) --
+this section will be extended once the phase-shear-readout comparison
+(also requested, separate note or section) is done.
 
 %%============================================================
 \section{Open questions / future work}
