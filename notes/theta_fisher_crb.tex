@@ -194,6 +194,96 @@ $\theta$'s recoverability -- it was never actually tried with the full
 covariance before now.
 
 %%============================================================
+\section{Extension: the unaberrated (Gaussian-beam) baselines}
+\label{sec:baseline}
+%%============================================================
+
+The above was scoped to the aberrated dataset only; this section repeats
+\S\ref{sec:comparison}'s CRB-vs-empirical comparison (Step 2+3 only, not the
+ridge check) for the two already-fit, unaberrated (\code{CONFOCAL\_FINE})
+baseline datasets already saved in \code{non\_phase\_shear/results/}
+(\code{kinematic\_estimates\_\{1e6,1e8\}\_N10\_shots50.json}) -- no new data
+generation, reusing \code{python-scripts/theta\_crb\_gaussian\_baseline.py}.
+
+\textbf{Data-availability caveat for \code{1e6}.} Its source dataset is no
+longer on disk (the only remaining 1e6-atom, 50-shots/run directory has a
+different cloud-width prior than what the saved \code{true\_theta} values
+actually show, so it isn't the same source). The saved JSON has
+\code{true\_theta} and photon-count totals ($n_{\rm tot}$) -- both of which
+\code{build\_joint\_fisher} needs -- but not the true $\phi$. Since $\phi$
+is drawn independently of $\theta$ (\code{phi0\_mode=random}), this uses a
+random $\phi\sim U(0,2\pi)$ substitute per shot instead. \code{1e8} has its
+exact source data (\code{data/R40\_N50\_A100000000\_..\_f0.3000}, confirmed
+by matching \code{true\_theta}/photon-count against its own file attrs), so
+its numbers use the real per-shot $\phi$, no substitution.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Component & CRB (1e6) & Empirical (1e6) & Ratio & \\
+\midrule
+$\mu_{x0}$    & $9.644\times10^{-6}$ & $1.017\times10^{-5}$ & $1.054$ & \\
+$\mu_{y0}$    & $9.644\times10^{-6}$ & $9.676\times10^{-6}$ & $1.003$ & \\
+$\mu_{vx0}$   & $2.500\times10^{-6}$ & $2.638\times10^{-6}$ & $1.055$ & \\
+$\mu_{vy0}$   & $2.501\times10^{-6}$ & $2.499\times10^{-6}$ & $0.999$ & \\
+$\sigma_x$    & $9.389\times10^{-6}$ & $1.019\times10^{-5}$ & $1.086$ & \\
+$\sigma_y$    & $9.367\times10^{-6}$ & $9.990\times10^{-6}$ & $1.067$ & \\
+$\sigma_{vx}$ & $6.676\times10^{-7}$ & $7.053\times10^{-7}$ & $1.056$ & \\
+$\sigma_{vy}$ & $6.699\times10^{-7}$ & $6.909\times10^{-7}$ & $1.031$ & \\
+\bottomrule
+\end{tabular}
+\caption{\code{1e6} baseline (unaberrated, $\phi$ substituted -- see caveat
+above): matches to within $\pm9\%$, similar quality to the aberrated
+result.}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+Component & CRB (1e8) & Empirical (1e8) & Ratio & \\
+\midrule
+$\mu_{x0}$    & $7.616\times10^{-6}$ & $9.279\times10^{-6}$ & $1.218$ & \\
+$\mu_{y0}$    & $7.656\times10^{-6}$ & $9.295\times10^{-6}$ & $1.214$ & \\
+$\mu_{vx0}$   & $1.972\times10^{-6}$ & $2.402\times10^{-6}$ & $1.218$ & \\
+$\mu_{vy0}$   & $1.982\times10^{-6}$ & $2.408\times10^{-6}$ & $1.215$ & \\
+$\sigma_x$    & $6.262\times10^{-6}$ & $9.877\times10^{-6}$ & $\mathbf{1.577}$ & \\
+$\sigma_y$    & $6.304\times10^{-6}$ & $9.822\times10^{-6}$ & $\mathbf{1.558}$ & \\
+$\sigma_{vx}$ & $4.297\times10^{-7}$ & $6.703\times10^{-7}$ & $\mathbf{1.560}$ & \\
+$\sigma_{vy}$ & $4.205\times10^{-7}$ & $6.731\times10^{-7}$ & $\mathbf{1.601}$ & \\
+\bottomrule
+\end{tabular}
+\caption{\code{1e8} baseline (unaberrated, real $\phi$, no substitution): a
+real, non-trivial gap -- means off by $\sim$21\%, widths off by
+$\sim$56--60\%. Confirmed this is not a numerical artifact: the CRB is
+stable under $h_\theta$ from $10^{-6}$ to $10^{-8}$ (only degrading at
+$10^{-9}$, floating-point roundoff), and the empirical residual distribution
+is broadly heavy-tailed (max $\approx4\times$ median, consistent across all
+8 components) rather than dominated by one outlier shot as in
+\S\ref{sec:comparison}.}
+\end{table}
+
+\textbf{Interpretation.} \code{1e6} (both aberrated and unaberrated) and the
+aberrated case both match the CRB to a few percent. \code{1e8} does not --
+empirical scatter is systematically $1.2$--$1.6\times$ the CRB, worst for
+the width parameters. This is not swept under the rug, and a plausible
+explanation already exists in prior work rather than needing to be invented
+here: \code{notes/joint\_profile\_inference.tex} (\S2026-07-20, a different
+optimizer but the same underlying pixel likelihood) documented that
+$\theta$'s optimisation \emph{"genuinely struggles at $10^8$"} -- even
+warm-started at the exact true $\theta$, a conditional solve "wandered/
+plateaued... never approaching tolerance" -- attributed to the likelihood
+surface becoming legitimately much sharper at high photon count
+($|\nabla_\theta{\rm NLL}|$ exceeding the NLL itself). If
+\code{fit\_theta\_best}'s L-BFGS-B is similarly not fully converging at
+$10^8$ (not checked here -- see \S\ref{sec:open}), that would inflate the
+\emph{empirical} RMSE above the true CRB floor without the CRB itself being
+wrong -- consistent with the direction of the observed gap (empirical $>$
+CRB, not the reverse) and with $1e6$ (where the same prior work reported
+convergence was fine) matching cleanly.
+
+%%============================================================
 \section{Framing: this is a single-shot comparison, and that's intentional}
 \label{sec:framing}
 %%============================================================
@@ -224,22 +314,29 @@ $\beta$'s CRB, which genuinely does improve with shot count
     $\theta$-component space, for a few shots -- confirm (or refute) the
     "mixed direction, doesn't dominate any single marginal" hypothesis
     directly rather than leaving it as speculation.
-  \item \textbf{Gaussian-beam baseline comparison} (explicitly deferred from
-    this note): repeat \S\ref{sec:comparison} for the matched unaberrated
-    dataset already on disk,
-    \code{data/R80\_N200\_A1000000\_..\_f0.3000} (no \code{\_psmap} suffix
-    $\Rightarrow$ default \code{CONFOCAL\_FINE}), which shares exactly the
-    same $n_{\rm atoms}$, cloud prior, and shot count as
-    \code{confocal\_random\_zernike} -- needs a modest (not full 20$\times$200)
-    \code{generate\_kinematic\_estimates.py} run to get empirical
-    $\hat\theta_{\rm best}$ scatter for it.
-  \item \textbf{Connect to the $\beta$ (signal) CRB.} If the aberrated case's
-    theta-CRB differs measurably from the Gaussian case's (once the above is
-    done), propagate that through \code{crb\_signal.py}'s existing
-    $j_{\rm eff}\to$ beta-CRB machinery to get an actual quantitative bound
-    on how much wavefront aberration/curvature costs in signal-extraction
-    precision -- the original motivating question for this whole line of
-    work.
+  \item \textbf{Diagnose the $10^8$ gap} (\S\ref{sec:baseline}): check
+    whether \code{fit\_theta\_best}'s L-BFGS-B is actually converging
+    (\code{res.nit}/\code{res.success}, and/or a tighter \code{maxiter} /
+    warm-start-from-truth spot check) at $10^8$ atoms specifically. If
+    convergence is the cause, this is an estimator-quality issue, not a
+    CRB-validity issue -- worth confirming directly rather than resting on
+    the plausible-but-unverified analogy to the joint-solve's documented
+    $10^8$ struggles.
+  \item \textbf{Exact (not $\phi$-substituted) \code{1e6} baseline} and a
+    dedicated apples-to-apples aberrated-vs-Gaussian comparison at matched
+    $N$: the \code{1e6}/\code{1e8} baselines used here are convenient
+    (already fit, no new compute) but neither is parameter-matched to
+    \code{confocal\_random\_zernike} as closely as
+    \code{data/R80\_N200\_A1000000\_..\_f0.3000} would be (exact $n_{\rm
+    atoms}$/cloud-prior/shot-count match, already on disk, just never run
+    through \code{generate\_kinematic\_estimates.py}) -- worth doing if a
+    tight, controlled aberration-only comparison is needed later.
+  \item \textbf{Connect to the $\beta$ (signal) CRB.} Propagate whatever
+    aberrated-vs-Gaussian theta-CRB difference is established through
+    \code{crb\_signal.py}'s existing $j_{\rm eff}\to$ beta-CRB machinery to
+    get an actual quantitative bound on how much wavefront
+    aberration/curvature costs in signal-extraction precision -- the
+    original motivating question for this whole line of work.
   \item The current check used only \code{run\_000}'s first 10 shots for the
     CRB side (cheap: $\sim1$ minute for all of \S\ref{sec:ridge}--\ref{sec:comparison}
     combined). Widening this to more shots/runs would tighten the CRB-side

@@ -66,12 +66,12 @@ H_THETA = np.array([1e-7] * 8)   # matches crb_signal.py's own convention (its m
 THETA_NAMES = crb.THETA_NAMES
 
 
-def build_acs():
+def build_acs(psmap_tag=PSMAP_TAG):
     """Same evaluator geometry as generate_kinematic_estimates.py's 'best' fit
     (tight half-range, bins=32, pixel_n_gh=8) -- required for the CRB to be
     comparable to the empirical fits it's measured against."""
-    psmap_z0 = mi.load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{PSMAP_TAG}_Z0.h5'))
-    psmap_z100 = mi.load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{PSMAP_TAG}_Z100.h5'))
+    psmap_z0 = mi.load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{psmap_tag}_Z0.h5'))
+    psmap_z100 = mi.load_psmap(str(REPO / 'output-files' / f'PSGRID4D_{psmap_tag}_Z100.h5'))
     sur_z0 = mi.PSMAPSurrogate(psmap_z0, mi.DEFAULT_T_DET, use_gpu=mi.USE_GPU)
     sur_z100 = mi.PSMAPSurrogate(psmap_z100, mi.DEFAULT_T_DET, use_gpu=mi.USE_GPU)
     edges = np.linspace(-TIGHT_HALF_RANGE, TIGHT_HALF_RANGE, BINS_BEST + 1)
