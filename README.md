@@ -48,8 +48,14 @@ python-scripts/       shared core library + data/PSMAP generation
     one_atom_traj.py         generates the reference trajectory (needs a built ais++ binary)
     crb_signal.py, map_inference.py, pixel_acs_grad.py, profile_cloud_nuisances.py
                              non_phase_shear inference library (theta/beta estimators)
+    phase_shear_crb_vs_empirical.py
+                             phase-shear Fisher/CRB vs. empirical (Section 4d)
+    crb_report.py            shared table-printing helper, used by both CRB scripts so
+                             kinematic and phase-shear results print in matching tables
 helpers/               shared utilities (dataset I/O, PSMAP-adjacent helpers, run tagging)
 runs_manifest.jsonl    append-only log of every pipeline stage that's been run (see Section 6)
+notes/                 theory write-ups, compiled to PDF (see theta_fisher_crb.tex for the
+                        CRB derivations Section 4d's scripts implement)
 
 optics/                arbitrary-wavefront generation (aisoptics), independent of any
                         one dataset -- see Section 4a-pre
@@ -68,7 +74,8 @@ output-files/one_atom.h5, one_atom_TRAJ.h5
 
 non_phase_shear/
     analysis/           generate_kinematic_estimates.py, beta_fits_from_kinematics.py,
-                         make_paper_figures.py, make_2d_kinematic_plots.py
+                         make_paper_figures.py, make_2d_kinematic_plots.py,
+                         crb_vs_empirical.py (Section 4d)
     notebooks/          reproduce_results.ipynb -- numbers + figures in one place
     results/, figures/  already-computed results (label=1e6/1e8, N_RUNS=10, N_SHOTS=50)
     paper/              kinematic_estimation_comparison.tex/.pdf
@@ -615,6 +622,69 @@ CLI script because the phase-shear pipeline's real output *is* the
 figures/regression diagnostics shown inline (systematic-bias surface
 plots, residual histograms, etc.), not just a couple of summary PNGs.
 
+### 4d. Compute CRB bounds and compare to empirical
+
+A Cramér-Rao bound (CRB) answers a different question than 4b/4c: not
+"what did this fit recover," but "what's the best *any* estimator could
+possibly recover from this data, given the Poisson shot noise alone." Once
+4a-4c have generated and fit a dataset (either pipeline), you can compute
+its CRB and get a table comparing it to the empirical scatter already
+measured -- for every estimator method the fit already produced (best/
+moments/null for the kinematic pipeline; raw/fitted-feature/oracle for
+phase-shear), not just the best one. Full theory and derivations:
+`notes/theta_fisher_crb.tex` -- this section is the runnable, parameterized
+version of what that note validates.
+
+**non_phase_shear**, same `<dataset_dir>`/`<n_runs>`/`<n_shots>`/`--label`/
+`--psmap_tag` convention as 4b (pass the exact values used there):
+```bash
+cd non_phase_shear/analysis
+python crb_vs_empirical.py <dataset_dir> <n_runs> <n_shots> --label <label> --psmap_tag <tag>
+```
+Prints the theta CRB (full-covariance, evaluated at truth) against
+empirical RMSE for `best`/`moments`/`null`, plus closed-form theoretical
+predictions for `null` (exact -- the prior width) and `moments` (Poisson
+counting-noise propagation through the closed-form Kalman-gain map) so you
+can see not just *how much* an estimator under-performs the CRB but *why*.
+Then the same thing for beta: the CRB (both as a rate-independent
+rad/√shot number and at the dataset's actual shot count `N`) against
+empirical beta RMSE for the same three methods. Writes
+`non_phase_shear/results/crb_vs_empirical_<label>_N<n_runs>_shots<n_shots>.json`.
+`--n_shots_crb` (default 10) controls how many real shots are sampled for
+the CRB side -- cheap, independent of `n_runs`/`n_shots`. Add
+`--skip-ridge-check` to skip the (slower) NLL-linearity check once you've
+already confirmed it holds for a given wavefront/sequence.
+
+**phase_shear**, mirroring `phase_shear_fit.py`'s own `--data_root`/
+`--out_dir` flags:
+```bash
+python python-scripts/phase_shear_crb_vs_empirical.py \
+    --data_root data/<dataset_dir> --out_dir phase_shear/results/<label> --label <label>
+```
+Prints the CRB on the differential phase Δφ against the always-available
+raw empirical residual, plus the propagated beta CRB. Pass
+`--published_tex <path-to-a-results-table.tex>` (e.g.
+`phase_shear/paper/phase_shear_results.tex`) to additionally compare
+against a systematic-bias-corrected residual, if one has been computed for
+that dataset (see the caveat below -- for a fresh dataset with no such
+table yet, this comparison is simply skipped, not required). Writes
+`phase_shear/results/crb_vs_empirical_<label>.json`.
+
+**Reading the numbers -- one caveat that matters for both pipelines**: a
+CRB models pure Poisson shot noise for a model assumed to be exactly
+correct. A large CRB-vs-empirical ratio can mean the estimator itself is
+inefficient (the usual case for `moments`/`null`, and for `best` on a
+strongly aberrated wavefront -- see `notes/theta_fisher_crb.tex` §5-6),
+*or* it can mean there's a systematic/model-misspecification error the CRB
+was never modeling in the first place (the phase-shear pipeline's raw
+residual is the clearest example in this repo -- §8 of the note). Before
+concluding "this estimator is N times off the noise floor," check whether
+a systematic could be at play, the way the note does for phase-shear.
+
+Neither script is logged to `runs_manifest.jsonl` -- like
+`make_paper_figures.py`, this is a read-only reporting stage over
+already-generated results, not a new "run."
+
 ## 5. Applying this to new parameters -- worked example
 
 Say you want to try 1e7 atoms/shot for the non_phase_shear pipeline:
@@ -632,6 +702,9 @@ python beta_fits_from_kinematics.py    R20_N100_A10000000_..._phi0random_sig_A0.
 
 # 4c. plot -- compare the new 1e7 run against the existing 1e6/1e8
 python make_paper_figures.py 1e6 1e7 1e8 --n_runs 20 --n_shots 100
+
+# 4d. compute the CRB and see how close best/moments/null get to it
+python crb_vs_empirical.py R20_N100_A10000000_..._phi0random_sig_A0.100_f0.3000 20 100 --label 1e7
 ```
 
 (Note `--n_runs`/`--n_shots` must match across all labels passed to
@@ -641,7 +714,12 @@ regenerate 1e6/1e8 with matching values.)
 
 For phase_shear the same idea applies with `phase_shear_fit.py` +
 `--out_dir phase_shear/results/1e7_shear` in place of steps 4b, then point
-the notebook's `DATASETS` dict at it.
+the notebook's `DATASETS` dict at it, and for 4d:
+```bash
+python python-scripts/phase_shear_crb_vs_empirical.py \
+    --data_root data/R20_N100_A10000000_..._kappa3.14e+04_both \
+    --out_dir phase_shear/results/1e7_shear --label 1e7_shear
+```
 
 ## 6. Tagging convention & run manifest
 
@@ -676,6 +754,13 @@ It's a plain append-only log, not a database -- if you regenerate the same
 tag twice you'll get two entries; the most recent one reflects the current
 state of that tag's output files.
 
+Reporting/analysis stages that only *read* already-generated results and
+produce plots or comparison tables -- `make_paper_figures.py`,
+`make_2d_kinematic_plots.py`, `crb_vs_empirical.py`,
+`phase_shear_crb_vs_empirical.py` -- do **not** append to the manifest
+(there's no new "run" to record); the manifest only tracks stages that
+generate or fit data.
+
 ## Arbitrary wavefronts: status and what's still open
 
 Section 2b covers the now-working path: `optics/` (aisoptics) builds a
@@ -706,6 +791,19 @@ Genuinely still open:
   track the extra structure unless matching terms are added here.
 - **z-range cost for the z0=100 source** -- see Section 2b's z-range note;
   no shortcut implemented, just flagged.
+- **Quantifying the PSF-variance term in the `moments` estimator's error
+  budget** (see `notes/theta_fisher_crb.tex` §7.4): `moments`' cloud-width
+  recovery is diagnosed as PSF-blind (its own ballistic-expansion model has
+  no PSF term) but not yet quantified numerically -- affects every
+  wavefront, not specific to arbitrary/aberrated ones, so listed here as a
+  general open item rather than an arbitrary-wavefront-specific one.
+
+CRB computation itself (Section 4d) has no arbitrary-wavefront-specific
+limitation -- `crb_vs_empirical.py`/`phase_shear_crb_vs_empirical.py` take
+`--psmap_tag`/`--data_root` like every other pipeline stage and were
+validated against both the analytic confocal PSMAP and the
+`confocal_random_zernike` arbitrary-wavefront PSMAP (see
+`notes/theta_fisher_crb.tex` for the validation).
 
 ## Notes on file layout / portability
 

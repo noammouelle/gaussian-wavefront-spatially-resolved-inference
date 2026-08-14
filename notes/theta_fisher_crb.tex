@@ -30,6 +30,15 @@
 
 \begin{document}
 \maketitle
+
+\noindent\textbf{Practical usage.} This note is the theory/derivation
+reference. To actually \emph{run} any of this against a new wavefront or
+sequence -- not just the three datasets validated here -- see README.md
+\S4d (\code{non\_phase\_shear/analysis/crb\_vs\_empirical.py} for the
+kinematic pipeline, \code{python-scripts/phase\_shear\_crb\_vs\_empirical.py}
+for phase-shear), which take the same \code{<dataset>}/\code{--label}/
+\code{--psmap\_tag} arguments as every other pipeline stage.
+
 \tableofcontents
 \newpage
 
@@ -98,9 +107,12 @@ also convenient here since it needs no extra optimizer run (the empirical
 $\hat\theta_{\rm best}$ values already come from a separate, already-run
 fit).
 
-Implementation: \code{python-scripts/theta\_crb\_vs\_empirical.py} (new),
-importing \code{crb\_signal.py}'s Fisher-matrix code rather than duplicating
-it.
+Implementation: \code{non\_phase\_shear/analysis/crb\_vs\_empirical.py}
+(originally written as a standalone \code{theta\_crb\_vs\_empirical.py},
+since folded into this one script -- see the note at the end of
+\S\ref{sec:open}), importing \code{crb\_signal.py}'s Fisher-matrix code
+rather than duplicating it. Runnable against any dataset/label/psmap\_tag,
+not just this section's -- see README.md \S4d.
 
 %%============================================================
 \section{Step 1: Is the ridge direction actually linear/quadratic?}
@@ -206,7 +218,12 @@ The above was scoped to the aberrated dataset only; this section repeats
 ridge check) for the two already-fit, unaberrated (\code{CONFOCAL\_FINE})
 baseline datasets already saved in \code{non\_phase\_shear/results/}
 (\code{kinematic\_estimates\_\{1e6,1e8\}\_N10\_shots50.json}) -- no new data
-generation, reusing \code{python-scripts/theta\_crb\_gaussian\_baseline.py}.
+generation, reusing the same \code{crb\_vs\_empirical.py} with
+\code{--label 1e6}/\code{--label 1e8} against these datasets (the standalone
+\code{theta\_crb\_gaussian\_baseline.py} this originally used has been
+folded into that one script, which now auto-falls-back to reading
+\code{true\_theta}/$n_{\rm tot}$ from the saved JSON when a dataset's source
+images are gone, exactly as described in the \code{1e6} caveat below).
 
 \textbf{Data-availability caveat for \code{1e6}.} Its source dataset is no
 longer on disk (the only remaining 1e6-atom, 50-shots/run directory has a
@@ -354,8 +371,8 @@ better than ignoring the image. \code{null} is $\sim1\times$ CRB for the
 means (coincidence of prior width $\approx$ CRB scale here) and $4$--$24\times$
 for the velocity mean/width components (real information gap, as expected
 for an estimator using zero data). Source:
-\code{python-scripts/theta\_crb\_vs\_empirical.py},
-\code{theta\_crb\_gaussian\_baseline.py}.}
+\code{non\_phase\_shear/analysis/crb\_vs\_empirical.py} (README.md \S4d),
+run separately against each of the three datasets/labels.}
 \label{tab:spectrum}
 \end{table}
 
@@ -439,7 +456,9 @@ measured image since both marginals come from the same shot's pixel counts,
 but the leading-order terms above only depend on each marginal separately).
 
 Evaluated on 20 real shots of \code{confocal\_random\_zernike}
-(\code{python-scripts/moments\_null\_crb\_vs\_empirical.py}), this Poisson-only
+(the \code{moments\_theory}/\code{null\_theoretical\_rmse} functions in
+\code{non\_phase\_shear/analysis/crb\_vs\_empirical.py}, originally a
+standalone \code{moments\_null\_crb\_vs\_empirical.py}), this Poisson-only
 prediction is:
 \begin{center}\small
 \begin{tabular}{lcc}
@@ -597,7 +616,9 @@ Two useful normalisations, both already implemented:
     one.
 \end{itemize}
 
-Implementation: \code{python-scripts/beta\_crb\_vs\_empirical.py}. Uses a
+Implementation: the beta-CRB block of
+\code{non\_phase\_shear/analysis/crb\_vs\_empirical.py} (originally a
+standalone \code{beta\_crb\_vs\_empirical.py}). Uses a
 representative sample of shots (not all $N$) to estimate $j_{\rm bar}$
 (checked: relative shot-to-shot spread of $j$ is $\sim$9\% for \code{1e6},
 tight enough that treating $j_i\approx j_{\rm bar}$ for all $N$ shots when

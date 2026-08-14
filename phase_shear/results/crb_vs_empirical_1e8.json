@@ -1,0 +1,42 @@
+{
+  "label": "1e8",
+  "data_root": "data/dummy",
+  "out_dir": "phase_shear/results/phase_shear_1e8",
+  "n_runs": 3,
+  "n_shots_crb": 15,
+  "j_bar": 5815620.746692405,
+  "sigma_per_shot": 0.0005864310530154618,
+  "crb_delta_phi_mrad": 0.4146693742856008,
+  "crb_beta_As_mrad": 0.13112996986593556,
+  "crb_beta_Ac_mrad": 0.13112996986593556,
+  "empirical_raw_mrad": 11.55464503845525,
+  "n_emp_shots": 60,
+  "dphi_methods": {
+    "raw": {
+      "Delta_phi resid std [mrad]": 13.51
+    },
+    "fitted-feature (IS)": {
+      "Delta_phi resid std [mrad]": 1.18
+    },
+    "fitted-feature (OOS)": {
+      "Delta_phi resid std [mrad]": 1.85
+    },
+    "oracle": {
+      "Delta_phi resid std [mrad]": 1.08
+    }
+  },
+  "beta_methods": {
+    "raw": {
+      "As": 5.35,
+      "Ac": 5.35
+    },
+    "fitted-feature (IS)": {
+      "As": 0.46,
+      "Ac": 0.46
+    },
+    "oracle": {
+      "As": 0.33,
+      "Ac": 0.33
+    }
+  }
+}
