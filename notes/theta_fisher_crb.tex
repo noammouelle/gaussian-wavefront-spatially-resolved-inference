@@ -1,0 +1,251 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{graphicx}
+
+\geometry{margin=2.5cm}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Lcal}{\mathcal{L}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+
+\title{%
+  Can a Fisher/Cram\'er-Rao Bound Predict $\theta$'s Empirical Recovery
+  Scatter?\\
+  \large Full-covariance CRB vs.\ real pixel-likelihood fits, aberrated
+  wavefront
+}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+%%============================================================
+\section{Motivation}
+\label{sec:motivation}
+%%============================================================
+
+Looking at 2D residual plots of $\hat\theta_{\rm best}-\theta_{\rm true}$
+for the \code{confocal\_random\_zernike} (aberrated-wavefront) dataset, the
+scatter looks Gaussian. That raises the obvious question: can a
+Fisher-information / Cram\'er-Rao bound predict that spread analytically,
+rather than only measuring it empirically?
+
+This was tried once before and got stuck. From
+\code{notes/joint\_profile\_inference.tex} (a sibling investigation,
+\S2026-07-20): a Laplace approximation using the \emph{diagonal} of a local
+finite-difference Hessian at $\theta$'s MAP was found \textbf{66--220$\times$
+tighter} than the true empirical scatter across 50 shots. That work diagnosed
+why, and flagged two things that were never actually done:
+
+\begin{enumerate}
+  \item $\theta$'s failure mode is a \emph{ridge} -- a continuous,
+    weakly-identified direction (near-zero Fisher eigenvalue), not discrete
+    multimodality like $\phi$'s. A ridge is compatible with local Fisher/CRB
+    validity \emph{if} it is close to linear/quadratic near the truth -- but
+    whether it actually is was flagged as unchecked (Future Work item 0a in
+    that file) and never verified.
+  \item The failed attempt used a \textbf{diagonal-only} Hessian, discarding
+    exactly the off-diagonal correlations a ridge produces. \code{crb\_signal.py}
+    already has \code{build\_joint\_fisher()} (full $17\times17$ joint
+    Fisher over $(\phi,\theta_{z0},\theta_{z100})$, pixel-likelihood mode,
+    all cross terms) and \code{full\_per\_shot\_covariance()} (inverts the
+    \emph{full} matrix) -- but the latter was dead code, never called from
+    that module's own driver. Nobody had tried the full-covariance version.
+\end{enumerate}
+
+This note finishes that specific, previously-flagged, previously-skipped
+check, reusing the existing (but previously unwired) machinery rather than
+re-deriving anything. Scope, by explicit direction: \textbf{one dataset}
+(the aberrated \code{confocal\_random\_zernike} case), matching CRB to
+empirical data. A Gaussian-beam-vs-aberrated comparison, and the downstream
+connection to the $\beta$ (signal) CRB, are deliberately deferred.
+
+%%============================================================
+\section{Setup}
+\label{sec:setup}
+%%============================================================
+
+Dataset: \code{data/R20\_N200\_A1000000\_..\_psmapconfocal\_random\_zernike}
+(20 runs $\times$ 200 shots, $10^6$ atoms/shot, aberrated wavefront via
+\code{phase\_space\_grids.py}'s interpolated-PSMAP path). Cloud prior:
+independent Gaussian on each of the 8 kinematic components (position,
+velocity, position spread, velocity spread, in $x$ and $y$), $\sigma=10\,\mu$m
+(or the matching velocity unit) for all 8. Evaluator geometry:
+\textbf{exactly} what \code{non\_phase\_shear/analysis/generate\_kinematic\_estimates.py}'s
+\code{best} (pixel-likelihood) fit uses -- \code{bins=32}, tight half-range
+$1.54\times10^{-3}$\,m, \code{pixel\_n\_gh=8} -- so the CRB is evaluated on
+the identical pixel/bin configuration that produced the empirical numbers it
+is compared against. Using a different geometry would make the comparison
+apples-to-oranges before it starts.
+
+All CRB quantities below are evaluated at the \emph{true} $(\phi,\theta_{z0},
+\theta_{z100})$ for each shot -- the standard Cram\'er-Rao convention, and
+also convenient here since it needs no extra optimizer run (the empirical
+$\hat\theta_{\rm best}$ values already come from a separate, already-run
+fit).
+
+Implementation: \code{python-scripts/theta\_crb\_vs\_empirical.py} (new),
+importing \code{crb\_signal.py}'s Fisher-matrix code rather than duplicating
+it.
+
+%%============================================================
+\section{Step 1: Is the ridge direction actually linear/quadratic?}
+\label{sec:ridge}
+%%============================================================
+
+For 10 real shots (\code{run\_000}), built the full $17\times17$ joint
+Fisher matrix $H$ at the true $(\phi,\theta_{z0},\theta_{z100})$, found its
+smallest eigenvalue $\lambda_{\min}$ and eigenvector $v$ (the ridge
+direction; $\sigma_{\rm ridge}=1/\sqrt{\lambda_{\min}}$), and profiled the
+\emph{real} Poisson NLL along $v$ at $k\sigma_{\rm ridge}$ for
+$k\in\{0.5,1,2,4,8\}$, comparing to the Fisher-implied quadratic
+$\tfrac12\lambda_{\min}(k\sigma_{\rm ridge})^2$.
+
+\textbf{Result: not cleanly quadratic.} The ratio (actual $\Delta$NLL /
+quadratic $\Delta$NLL) at $k=0.5$--$1$ (the scale that actually matters --
+real fluctuations live near $1\sigma$, not $8\sigma$) ranged from
+\textbf{$-2.9$ to $+4.3$} across the 10 shots -- including several shots
+where the sign itself flips (the true NLL is briefly \emph{lower}, not
+higher, than at the anchor point, in the direction the Fisher matrix calls
+"increasing"). The ratio does converge toward 1 at larger $k$ (e.g.\ $0.80$--$1.23$
+at $k=8$), consistent with the quadratic approximation eventually dominating
+far from the anchor, but that is not the regime real shot noise samples.
+
+This is a genuine, unresolved finding, not swept under the rug: the single
+worst-conditioned direction is \emph{not} well-approximated by the local
+quadratic at the scale that matters. And yet -- see \S\ref{sec:comparison}
+-- the \emph{aggregate}, full 8-dimensional marginal covariance built from
+the same local Fisher matrix matches the empirical scatter well. The most
+likely reconciliation: $v$ (found by minimizing over the full 17-dimensional
+$(\phi,\theta_{z0},\theta_{z100})$ space) is a mixed direction, not aligned
+with any single physical $\theta$ component's own marginal-variance
+direction, so a $2$--$4\times$ local mis-estimate of curvature along $v$
+does not necessarily translate into a comparable error in any individual
+component's marginal variance after the Schur-complement/inversion mixes
+all 17 directions together. This is a hypothesis, not something checked
+here -- flagged in \S\ref{sec:open} as follow-up.
+
+%%============================================================
+\section{Step 2+3: Full-covariance CRB vs.\ empirical RMSE}
+\label{sec:comparison}
+%%============================================================
+
+For the same 10 shots, computed \code{full\_per\_shot\_covariance(H)} and
+extracted $\sigma_{\theta_{z0}}$, $\sigma_{\theta_{z100}}$ (marginal std per
+component), aggregated as root-mean-square across shots. Compared against
+the empirical RMSE of $\hat\theta_{\rm best}-\theta_{\rm true}$, pooled over
+z0 and z100, from the 13 completed runs of the real
+\code{confocal\_random\_zernike} job available at the time of this check
+(5200 shot/z-slice points).
+
+\textbf{One data-quality issue found and handled}: the raw empirical RMSE
+for $\sigma_{vy}$ was $2.33\times10^{-6}$, a $3.46\times$ mismatch against
+the CRB's $6.75\times10^{-7}$ -- while every other component matched to a
+few percent. Investigated directly rather than accepted: of 5200 points, a
+single shot has a $\sigma_{vy}$ residual of $1.6\times10^{-4}$ ($161\,\mu$m)
+-- roughly $70\times$ larger than the next-largest residual in that
+component and wildly inconsistent with the rest of the distribution (median
+$|{\rm residual}|=4.4\times10^{-7}$, matching $\sigma_{vx}$'s median almost
+exactly). RMSE is quadratic in residuals, so this one likely optimizer
+failure (an L-BFGS-B run landing in a bad basin for that one shot -- not a
+CRB or model problem) was enough to dominate the whole-sample RMSE by
+itself. Excluding it (a MAD-based robust-outlier filter, $>20\sigma_{\rm
+robust}$ in any component; 1/5200 points excluded) brings $\sigma_{vy}$'s
+empirical RMSE to $6.77\times10^{-7}$.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Component & CRB (avg $z0$,$z100$) & Empirical RMSE (outlier excl.) & Ratio \\
+\midrule
+$\mu_{x0}$      & $9.655\times10^{-6}$ & $9.816\times10^{-6}$ & $1.017$ \\
+$\mu_{y0}$      & $9.655\times10^{-6}$ & $9.531\times10^{-6}$ & $0.987$ \\
+$\mu_{vx0}$     & $2.471\times10^{-6}$ & $2.511\times10^{-6}$ & $1.016$ \\
+$\mu_{vy0}$     & $2.473\times10^{-6}$ & $2.437\times10^{-6}$ & $0.985$ \\
+$\sigma_x$      & $9.500\times10^{-6}$ & $9.912\times10^{-6}$ & $1.043$ \\
+$\sigma_y$      & $9.461\times10^{-6}$ & $9.892\times10^{-6}$ & $1.046$ \\
+$\sigma_{vx}$   & $6.767\times10^{-7}$ & $6.861\times10^{-7}$ & $1.014$ \\
+$\sigma_{vy}$   & $6.745\times10^{-7}$ & $6.771\times10^{-7}$ & $1.004$ \\
+\bottomrule
+\end{tabular}
+\caption{Full-covariance theta CRB vs.\ empirical RMSE (outlier-excluded),
+all 8 kinematic components, confocal\_random\_zernike dataset. All values in
+metres (or the matching velocity unit). Every component agrees to within
+$\pm5\%$.}
+\end{table}
+
+\textbf{Result: the full-covariance CRB matches the empirical scatter to
+within a few percent, across all 8 components, once one known bad fit is
+excluded.} This directly refutes the presumption (reasonable, given the
+prior 66--220$\times$ failure) that Fisher/CRB simply cannot predict
+$\theta$'s recoverability -- it was never actually tried with the full
+covariance before now.
+
+%%============================================================
+\section{Framing: this is a single-shot comparison, and that's intentional}
+\label{sec:framing}
+%%============================================================
+
+$\theta$ is a fresh, independent nuisance parameter drawn from the prior
+\emph{every shot} -- it is not a shared, estimated-once parameter like
+$\beta=(A_s,A_c)$. Consequently, pooling more shots does \emph{not} reduce
+the true per-shot $\theta$ RMSE (there is nothing to pool: shot $i$'s
+$\theta_i$ tells you nothing about shot $j$'s $\theta_j$). What more shots
+\emph{do} improve is the \emph{measurement precision of the empirical RMSE
+estimate itself} -- with 5200 points the empirical RMSE's own relative
+uncertainty is $\sim1/\sqrt{2\times5200}\approx1\%$, tight enough to
+distinguish the observed few-percent CRB agreement from noise. This is why
+this comparison uses many shots (for a trustworthy \emph{measurement}) while
+still being a fundamentally single-shot statement (the CRB itself is a
+per-shot quantity, not one that shrinks with $N_{\rm shots}$) -- unlike
+$\beta$'s CRB, which genuinely does improve with shot count
+(\code{crb\_signal.py}'s \code{crb\_from\_j}/\code{simple\_scaling\_crb}).
+
+%%============================================================
+\section{Open questions / future work}
+\label{sec:open}
+%%============================================================
+
+\begin{itemize}
+  \item \textbf{Reconcile \S\ref{sec:ridge} and \S\ref{sec:comparison}.}
+    Check what the worst-eigenvalue direction $v$ actually projects onto in
+    $\theta$-component space, for a few shots -- confirm (or refute) the
+    "mixed direction, doesn't dominate any single marginal" hypothesis
+    directly rather than leaving it as speculation.
+  \item \textbf{Gaussian-beam baseline comparison} (explicitly deferred from
+    this note): repeat \S\ref{sec:comparison} for the matched unaberrated
+    dataset already on disk,
+    \code{data/R80\_N200\_A1000000\_..\_f0.3000} (no \code{\_psmap} suffix
+    $\Rightarrow$ default \code{CONFOCAL\_FINE}), which shares exactly the
+    same $n_{\rm atoms}$, cloud prior, and shot count as
+    \code{confocal\_random\_zernike} -- needs a modest (not full 20$\times$200)
+    \code{generate\_kinematic\_estimates.py} run to get empirical
+    $\hat\theta_{\rm best}$ scatter for it.
+  \item \textbf{Connect to the $\beta$ (signal) CRB.} If the aberrated case's
+    theta-CRB differs measurably from the Gaussian case's (once the above is
+    done), propagate that through \code{crb\_signal.py}'s existing
+    $j_{\rm eff}\to$ beta-CRB machinery to get an actual quantitative bound
+    on how much wavefront aberration/curvature costs in signal-extraction
+    precision -- the original motivating question for this whole line of
+    work.
+  \item The current check used only \code{run\_000}'s first 10 shots for the
+    CRB side (cheap: $\sim1$ minute for all of \S\ref{sec:ridge}--\ref{sec:comparison}
+    combined). Widening this to more shots/runs would tighten the CRB-side
+    estimate too (currently it isn't the limiting source of noise in the
+    comparison, but worth checking as the empirical run finishes all 20
+    runs).
+\end{itemize}
+
+\end{document}
