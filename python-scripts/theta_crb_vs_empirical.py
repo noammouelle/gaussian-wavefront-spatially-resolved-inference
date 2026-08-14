@@ -198,9 +198,14 @@ def theta_crb(shots, acs_z0, acs_z100, verbose=True):
     return crb_rmse_z0, crb_rmse_z100, sigmas_z0, sigmas_z100
 
 
-def empirical_rmse(label=LABEL, n_runs=N_RUNS_EMP, n_shots=N_SHOTS_EMP, outlier_sigma=20.0):
+def empirical_rmse(label=LABEL, n_runs=N_RUNS_EMP, n_shots=N_SHOTS_EMP, outlier_sigma=20.0, method='best'):
     """Step 3: load whatever portion of the checkpointed kinematic_estimates
-    JSON exists, compute empirical RMSE(theta_best - theta_true).
+    JSON exists, compute empirical RMSE(theta_<method> - theta_true).
+    method: 'best' (pixel-likelihood, what the CRB models), 'moments'
+    (closed-form Kalman-gain estimator), or 'null' (prior-mean only, no
+    image information at all) -- pass 'moments'/'null' to see the CRB
+    against the full spectrum of estimators, not just the one it's actually
+    modeling.
 
     Also returns a robust RMSE with per-component outliers excluded (residual
     magnitude > outlier_sigma * MAD-based robust sigma). RMSE is quadratic in
@@ -215,8 +220,8 @@ def empirical_rmse(label=LABEL, n_runs=N_RUNS_EMP, n_shots=N_SHOTS_EMP, outlier_
     residuals = []
     for run_name, run in data.items():
         for shot in run['shots']:
-            true_z0 = np.array(shot['true_theta_z0']); est_z0 = np.array(shot['theta_best_z0'])
-            true_z100 = np.array(shot['true_theta_z100']); est_z100 = np.array(shot['theta_best_z100'])
+            true_z0 = np.array(shot['true_theta_z0']); est_z0 = np.array(shot[f'theta_{method}_z0'])
+            true_z100 = np.array(shot['true_theta_z100']); est_z100 = np.array(shot[f'theta_{method}_z100'])
             residuals.append(est_z0 - true_z0)
             residuals.append(est_z100 - true_z100)
     residuals = np.array(residuals)
@@ -261,10 +266,13 @@ if __name__ == '__main__':
     print(f'Empirical RMSE (pooled z0+z100):        {dict(zip(THETA_NAMES, emp_rmse))}')
     print(f'Empirical RMSE, outliers excluded:      {dict(zip(THETA_NAMES, emp_rmse_robust))}')
 
-    print('\n=== Comparison table (CRB avg(z0,z100) vs empirical, ratio) ===')
+    emp_moments, _, _, _, _ = empirical_rmse(method='moments')
+    emp_null, _, _, _, _ = empirical_rmse(method='null')
+
+    print('\n=== Comparison table: CRB (the pixel-likelihood floor) vs. the full estimator spectrum ===')
     crb_avg = 0.5 * (crb_rmse_z0 + crb_rmse_z100)
-    for name, c, e, er in zip(THETA_NAMES, crb_avg, emp_rmse, emp_rmse_robust):
-        print(f'  {name:10s}  CRB={c:.4e}  empirical(raw)={e:.4e} (ratio={e / c:.3f})  '
-              f'empirical(robust)={er:.4e} (ratio={er / c:.3f})')
+    for name, c, er, em, en in zip(THETA_NAMES, crb_avg, emp_rmse_robust, emp_moments, emp_null):
+        print(f'  {name:10s}  CRB={c:.4e}  best={er:.4e} (x{er / c:.2f})  '
+              f'moments={em:.4e} (x{em / c:.2f})  null={en:.4e} (x{en / c:.2f})')
 
     print(f'\nTotal time: {time.perf_counter() - t0:.1f}s')

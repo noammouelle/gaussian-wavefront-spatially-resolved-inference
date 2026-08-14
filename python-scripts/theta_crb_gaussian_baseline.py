@@ -99,19 +99,25 @@ if __name__ == '__main__':
         N_SHOTS_CHECK)
     crb_z0_1e8, crb_z100_1e8, _, _ = theta_crb(shots_1e8, acs_z0, acs_z100, verbose=False)
     emp_1e8, emp_1e8_robust, n_out_1e8, n_runs_1e8, n_pts_1e8 = empirical_rmse('1e8', 10, 50)
+    emp_1e8_mom, *_ = empirical_rmse('1e8', 10, 50, method='moments')
+    emp_1e8_null, *_ = empirical_rmse('1e8', 10, 50, method='null')
     crb_avg_1e8 = 0.5 * (crb_z0_1e8 + crb_z100_1e8)
     print(f'{n_runs_1e8} runs, {n_pts_1e8} points, {n_out_1e8} outlier(s) excluded')
-    for name, c, e in zip(THETA_NAMES, crb_avg_1e8, emp_1e8_robust):
-        print(f'  {name:10s}  CRB={c:.4e}  empirical={e:.4e}  ratio={e / c:.3f}')
+    for name, c, e, em, en in zip(THETA_NAMES, crb_avg_1e8, emp_1e8_robust, emp_1e8_mom, emp_1e8_null):
+        print(f'  {name:10s}  CRB={c:.4e}  best={e:.4e} (x{e/c:.2f})  moments={em:.4e} (x{em/c:.2f})  '
+              f'null={en:.4e} (x{en/c:.2f})')
 
     print('\n=== 1e6 (approximation: JSON true_theta/n_tot + random phi -- see docstring) ===')
     shots_1e6 = shots_from_json_random_phi('1e6', N_SHOTS_CHECK, seed=0)
     crb_z0_1e6, crb_z100_1e6, _, _ = theta_crb(shots_1e6, acs_z0, acs_z100, verbose=False)
     emp_1e6, emp_1e6_robust, n_out_1e6, n_runs_1e6, n_pts_1e6 = empirical_rmse('1e6', 10, 50)
+    emp_1e6_mom, *_ = empirical_rmse('1e6', 10, 50, method='moments')
+    emp_1e6_null, *_ = empirical_rmse('1e6', 10, 50, method='null')
     crb_avg_1e6 = 0.5 * (crb_z0_1e6 + crb_z100_1e6)
     print(f'{n_runs_1e6} runs, {n_pts_1e6} points, {n_out_1e6} outlier(s) excluded')
-    for name, c, e in zip(THETA_NAMES, crb_avg_1e6, emp_1e6_robust):
-        print(f'  {name:10s}  CRB={c:.4e}  empirical={e:.4e}  ratio={e / c:.3f}')
+    for name, c, e, em, en in zip(THETA_NAMES, crb_avg_1e6, emp_1e6_robust, emp_1e6_mom, emp_1e6_null):
+        print(f'  {name:10s}  CRB={c:.4e}  best={e:.4e} (x{e/c:.2f})  moments={em:.4e} (x{em/c:.2f})  '
+              f'null={en:.4e} (x{en/c:.2f})')
 
     print('\n=== For reference: same comparison, aberrated confocal_random_zernike (already done) ===')
     print('  (see notes/theta_fisher_crb.tex Table 1 -- all components matched to +-5%)')

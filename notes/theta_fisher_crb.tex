@@ -7,6 +7,7 @@
 \usepackage{xcolor}
 \usepackage{graphicx}
 \usepackage{multirow}
+\usepackage{makecell}
 
 \geometry{margin=2.5cm}
 
@@ -18,10 +19,11 @@
 \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
 
 \title{%
-  Can a Fisher/Cram\'er-Rao Bound Predict $\theta$'s Empirical Recovery
-  Scatter?\\
-  \large Full-covariance CRB vs.\ real pixel-likelihood fits, aberrated
-  wavefront
+  Fisher/Cram\'er-Rao Bounds for Kinematic and Phase-Shear Signal
+  Extraction\\
+  \large Full-covariance $\theta$-CRB vs.\ real pixel-likelihood fits;
+  propagation to $\beta$; the \code{best}/\code{moments}/\code{null}
+  estimator spectrum; and a fresh CRB for the phase-shear readout
 }
 \author{}
 \date{}
@@ -285,6 +287,239 @@ CRB, not the reverse) and with $1e6$ (where the same prior work reported
 convergence was fine) matching cleanly.
 
 %%============================================================
+\section{The full estimator spectrum: \code{best} vs.\ \code{moments} vs.\ \code{null}}
+\label{sec:spectrum}
+%%============================================================
+
+Everything so far compared the CRB against \code{best} (the full
+pixel-likelihood MAP fit) only. \code{generate\_kinematic\_estimates.py}
+actually produces three theta estimates per shot from the same image:
+\code{best}, \code{moments} (a closed-form linear estimator, described
+below), and \code{null} (the prior mean, using no image information at
+all). Putting all three next to the CRB in one table answers a sharper
+question than "does the CRB match the data": it shows \emph{where each
+estimator sits between the two extremes of no information (null) and full
+information (the CRB, an idealised efficient estimator)} -- and, since
+\code{null} and \code{moments} both have closed-form theoretical
+predictions of their own (derived below), whether an estimator's
+under-performance relative to the CRB is understood \emph{quantitatively},
+not just observed as a ratio.
+
+\subsection{Empirical comparison, all three kinematic datasets}
+\label{sec:spectrum-empirical}
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lcccc}
+\toprule
+Component & CRB & \code{best} & \code{moments} & \code{null} \\
+\midrule
+\multicolumn{5}{l}{\emph{confocal\_random\_zernike (aberrated), 15 runs, 6000 pts}} \\
+$\mu_{x0}$    & $9.655\times10^{-6}$ & $9.778\times10^{-6}$ ($1.01\times$) & $9.777\times10^{-6}$ ($1.01\times$) & $1.007\times10^{-5}$ ($1.04\times$) \\
+$\mu_{y0}$    & $9.655\times10^{-6}$ & $9.566\times10^{-6}$ ($0.99\times$) & $9.563\times10^{-6}$ ($0.99\times$) & $9.809\times10^{-6}$ ($1.02\times$) \\
+$\mu_{vx0}$   & $2.471\times10^{-6}$ & $2.504\times10^{-6}$ ($1.01\times$) & $2.663\times10^{-6}$ ($1.08\times$) & $1.007\times10^{-5}$ ($\mathbf{4.07\times}$) \\
+$\mu_{vy0}$   & $2.473\times10^{-6}$ & $2.447\times10^{-6}$ ($0.99\times$) & $2.626\times10^{-6}$ ($1.06\times$) & $1.007\times10^{-5}$ ($\mathbf{4.07\times}$) \\
+$\sigma_x$    & $9.500\times10^{-6}$ & $9.988\times10^{-6}$ ($1.05\times$) & $1.000\times10^{-5}$ ($1.05\times$) & $1.000\times10^{-5}$ ($1.05\times$) \\
+$\sigma_y$    & $9.461\times10^{-6}$ & $9.973\times10^{-6}$ ($1.05\times$) & $9.997\times10^{-6}$ ($1.06\times$) & $1.000\times10^{-5}$ ($1.06\times$) \\
+$\sigma_{vx}$ & $6.767\times10^{-7}$ & $6.913\times10^{-7}$ ($1.02\times$) & $9.151\times10^{-6}$ ($\mathbf{13.5\times}$) & $1.024\times10^{-5}$ ($\mathbf{15.1\times}$) \\
+$\sigma_{vy}$ & $6.745\times10^{-7}$ & $6.821\times10^{-7}$ ($1.01\times$) & $8.984\times10^{-6}$ ($\mathbf{13.3\times}$) & $1.005\times10^{-5}$ ($\mathbf{14.9\times}$) \\
+\midrule
+\multicolumn{5}{l}{\emph{1e8 (Gaussian beam), 10 runs, 1000 pts}} \\
+$\mu_{x0}$    & $7.616\times10^{-6}$ & $9.279\times10^{-6}$ ($1.22\times$) & $9.276\times10^{-6}$ ($1.22\times$) & $9.545\times10^{-6}$ ($1.25\times$) \\
+$\mu_{y0}$    & $7.656\times10^{-6}$ & $9.295\times10^{-6}$ ($1.21\times$) & $9.298\times10^{-6}$ ($1.21\times$) & $9.737\times10^{-6}$ ($1.27\times$) \\
+$\mu_{vx0}$   & $1.972\times10^{-6}$ & $2.402\times10^{-6}$ ($1.22\times$) & $2.481\times10^{-6}$ ($1.26\times$) & $9.830\times10^{-6}$ ($\mathbf{4.99\times}$) \\
+$\mu_{vy0}$   & $1.982\times10^{-6}$ & $2.408\times10^{-6}$ ($1.21\times$) & $2.466\times10^{-6}$ ($1.24\times$) & $1.028\times10^{-5}$ ($\mathbf{5.19\times}$) \\
+$\sigma_x$    & $6.262\times10^{-6}$ & $9.877\times10^{-6}$ ($1.58\times$) & $9.866\times10^{-6}$ ($1.58\times$) & $9.867\times10^{-6}$ ($1.58\times$) \\
+$\sigma_y$    & $6.304\times10^{-6}$ & $9.822\times10^{-6}$ ($1.56\times$) & $9.833\times10^{-6}$ ($1.56\times$) & $9.837\times10^{-6}$ ($1.56\times$) \\
+$\sigma_{vx}$ & $4.297\times10^{-7}$ & $6.703\times10^{-7}$ ($1.56\times$) & $8.914\times10^{-6}$ ($\mathbf{20.8\times}$) & $1.001\times10^{-5}$ ($\mathbf{23.3\times}$) \\
+$\sigma_{vy}$ & $4.205\times10^{-7}$ & $6.731\times10^{-7}$ ($1.60\times$) & $8.965\times10^{-6}$ ($\mathbf{21.3\times}$) & $1.010\times10^{-5}$ ($\mathbf{24.0\times}$) \\
+\midrule
+\multicolumn{5}{l}{\emph{1e6 ($\phi$-substituted), 10 runs, 1000 pts}} \\
+$\mu_{x0}$    & $9.644\times10^{-6}$ & $1.017\times10^{-5}$ ($1.05\times$) & $1.017\times10^{-5}$ ($1.05\times$) & $1.048\times10^{-5}$ ($1.09\times$) \\
+$\mu_{y0}$    & $9.644\times10^{-6}$ & $9.676\times10^{-6}$ ($1.00\times$) & $9.678\times10^{-6}$ ($1.00\times$) & $1.003\times10^{-5}$ ($1.04\times$) \\
+$\mu_{vx0}$   & $2.500\times10^{-6}$ & $2.638\times10^{-6}$ ($1.06\times$) & $2.702\times10^{-6}$ ($1.08\times$) & $1.023\times10^{-5}$ ($\mathbf{4.09\times}$) \\
+$\mu_{vy0}$   & $2.501\times10^{-6}$ & $2.499\times10^{-6}$ ($1.00\times$) & $2.557\times10^{-6}$ ($1.02\times$) & $9.992\times10^{-6}$ ($\mathbf{4.00\times}$) \\
+$\sigma_x$    & $9.389\times10^{-6}$ & $1.019\times10^{-5}$ ($1.09\times$) & $1.019\times10^{-5}$ ($1.09\times$) & $1.020\times10^{-5}$ ($1.09\times$) \\
+$\sigma_y$    & $9.367\times10^{-6}$ & $9.990\times10^{-6}$ ($1.07\times$) & $1.000\times10^{-5}$ ($1.07\times$) & $1.000\times10^{-5}$ ($1.07\times$) \\
+$\sigma_{vx}$ & $6.676\times10^{-7}$ & $7.053\times10^{-7}$ ($1.06\times$) & $8.922\times10^{-6}$ ($\mathbf{13.4\times}$) & $1.003\times10^{-5}$ ($\mathbf{15.0\times}$) \\
+$\sigma_{vy}$ & $6.699\times10^{-7}$ & $6.909\times10^{-7}$ ($1.03\times$) & $8.826\times10^{-6}$ ($\mathbf{13.2\times}$) & $9.919\times10^{-6}$ ($\mathbf{14.8\times}$) \\
+\bottomrule
+\end{tabular}
+\caption{RMSE per component (metres or matching velocity unit), ratio to CRB
+in parentheses. \code{best} tracks the CRB everywhere. \code{moments} tracks
+the CRB for the four position/velocity \emph{means} but is $13$--$21\times$
+worse than the CRB for the four cloud-\emph{width} components -- almost
+identical to \code{null}, i.e.\ for width recovery \code{moments} is barely
+better than ignoring the image. \code{null} is $\sim1\times$ CRB for the
+means (coincidence of prior width $\approx$ CRB scale here) and $4$--$24\times$
+for the velocity mean/width components (real information gap, as expected
+for an estimator using zero data). Source:
+\code{python-scripts/theta\_crb\_vs\_empirical.py},
+\code{theta\_crb\_gaussian\_baseline.py}.}
+\label{tab:spectrum}
+\end{table}
+
+The immediate pattern -- \code{moments}$\approx$\code{null} for the four
+width components, across \emph{all three} datasets regardless of aberration
+or photon count -- is the thing that needs explaining. The next two
+subsections build a closed-form theoretical prediction for \code{null} and
+\code{moments} respectively, rather than leaving this as an empirical
+curiosity.
+
+\subsection{Theoretical prediction for \code{null}: trivial, and exact}
+\label{sec:null-theory}
+
+\code{null} is \code{map\_eta} with the innovation forced to zero: it always
+returns the prior mean $m_\eta$, using no per-shot information whatsoever.
+There is nothing to propagate -- $\rm{RMSE}(\code{null})$ is, by definition,
+the population spread of the true $\theta$ around the prior mean, i.e.\ the
+prior width itself. Reading straight off \code{map\_inference.py}'s own
+prior constants (no new code):
+\[
+  \sigma_{\mu_{x0}}=\sigma_{\mu_{y0}}=\sigma_{\mu_{vx0}}=\sigma_{\mu_{vy0}}
+  = \code{TAU\_MU\_POS} = \code{TAU\_MU\_VEL} = 10\,\mu{\rm m}.
+\]
+For the width components the prior lives on the \emph{variance}
+$V_{x0}=\sigma_x^2$, not $\sigma_x$ itself:
+$V_{x0}\sim\N(\bar\sigma_{\rm pos}^2,\,\tau_{V,{\rm pos}}^2)$ with
+$\tau_{V,{\rm pos}}=2\bar\sigma_{\rm pos}\,\code{SIG\_SIG\_POS}$ (\code{build\_prior}'s
+own definition). The delta method for $\sigma_x=\sqrt{V_{x0}}$ gives
+\[
+  {\rm std}(\sigma_x) \;\approx\; \frac{\tau_{V,{\rm pos}}}{2\bar\sigma_{\rm pos}}
+  \;=\; \code{SIG\_SIG\_POS} \;=\; 10\,\mu{\rm m},
+\]
+exactly (the factor of $2\bar\sigma_{\rm pos}$ in $\tau_{V,{\rm pos}}$'s own
+definition cancels the delta-method's own $2\bar\sigma_{\rm pos}$ Jacobian
+factor -- \code{build\_prior} was evidently written with exactly this
+identity in mind). So the theoretical prediction is $10\,\mu{\rm m}$ for
+\emph{all eight} components, uniformly. Table~\ref{tab:spectrum} shows this
+matches empirical \code{null} RMSE to within $0$--$9\%$ across all three
+datasets -- as it must, since by construction \code{null} carries zero
+per-shot Fisher information and this is purely a statement about how the
+data-generating prior is parameterised.
+
+\subsection{Theoretical prediction for \code{moments}: linear Poisson-noise propagation}
+\label{sec:moments-theory}
+
+\code{theta\_moments} is \emph{exactly} linear in the raw image moments
+$M=[\mu_{xf},\mu_{yf},V_{xf},V_{yf}]$ (\code{map\_inference.py}'s
+\code{build\_A}/\code{build\_prior}/\code{precompute\_kalman}/\code{map\_eta}):
+\[
+  \hat\eta_{\rm moments} = m_\eta + K\,(M - A\,m_\eta),\qquad
+  K = P_\eta A^\top (A P_\eta A^\top)^{-1}\ \ (10\times4,\ {\rm fixed}),
+\]
+so its covariance is \emph{exactly} $\rm{Cov}(\hat\eta_{\rm moments}) = K\,{\rm
+Cov}(M)\,K^\top$ -- no finite differences needed, just the measurement noise
+of $M$ itself propagated through this fixed linear map.
+
+\textbf{Poisson statistics of the raw moments.} The port-summed pixel row
+sums $n_i\sim{\rm Poisson}(\lambda_i)$, $i=1,\dots,{\rm bins}$, are
+independent, with $N=\sum_i n_i$. This is the standard Poisson-thinning
+identity: conditional on $N$, $(n_i)$ is \emph{exactly}
+${\rm Multinomial}(N, p_i)$, $p_i=\lambda_i/\sum\lambda$. So, conditional on
+the realised $N$ (what is actually observed and used), $\mu_x=\sum n_ix_i/N$
+and $V_x=\sum n_i(x_i-\mu_x)^2/N$ behave \emph{exactly} like the sample
+mean/variance of $N$ i.i.d.\ draws from the pixel distribution $p(x)$. The
+standard (shape-agnostic) finite-sample results for a weighted
+mean/variance estimator are
+\[
+  {\rm Var}(\mu_x) = \frac{V_x}{N},\qquad
+  {\rm Cov}(\mu_x,V_x) = \frac{\mu_3}{N},\qquad
+  {\rm Var}(V_x) = \frac{\mu_4-V_x^2}{N},
+\]
+where $\mu_3,\mu_4$ are the 3rd/4th central moments of $p(x)$, computed
+directly from each shot's own measured marginal histogram (not assumed
+Gaussian -- the PSF-blurred image marginal need not be exactly so). The
+extra scatter from $N$ itself being random rather than fixed is second order
+in $1/N$ (${\rm Var}(\mu_x)={\rm E}[{\rm Var}(\mu_x|N)]+{\rm Var}({\rm
+E}[\mu_x|N])$, and the second term vanishes because ${\rm E}[\mu_x|N]=\mu_{x,{\rm true}}$
+regardless of $N$) and is dropped. The $x$/$y$ blocks are treated as
+uncorrelated (exact in the underlying cloud model, an approximation for the
+measured image since both marginals come from the same shot's pixel counts,
+but the leading-order terms above only depend on each marginal separately).
+
+Evaluated on 20 real shots of \code{confocal\_random\_zernike}
+(\code{python-scripts/moments\_null\_crb\_vs\_empirical.py}), this Poisson-only
+prediction is:
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+Component & Poisson-noise-only theory & Empirical \code{moments} RMSE (ratio) \\
+\midrule
+$\mu_{x0}$    & $4.7\times10^{-8}$  & $9.78\times10^{-6}$ ($207\times$) \\
+$\mu_{y0}$    & $1.8\times10^{-7}$  & $9.56\times10^{-6}$ ($53\times$) \\
+$\mu_{vx0}$   & $4.7\times10^{-8}$  & $2.66\times10^{-6}$ ($57\times$) \\
+$\mu_{vy0}$   & $1.8\times10^{-7}$  & $2.63\times10^{-6}$ ($15\times$) \\
+$\sigma_x$    & $2.3\times10^{-13}$ & $1.00\times10^{-5}$ ($4\times10^7$) \\
+$\sigma_y$    & $4.4\times10^{-11}$ & $1.00\times10^{-5}$ ($2\times10^5$) \\
+$\sigma_{vx}$ & $3.3\times10^{-12}$ & $9.15\times10^{-6}$ ($3\times10^6$) \\
+$\sigma_{vy}$ & $2.3\times10^{-13}$ & $9.0\times10^{-6}$ ($4\times10^7$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Poisson counting noise is not the answer -- it predicts an error
+4--8 orders of magnitude below what's actually observed.} At $10^6$--$10^8$
+detected atoms, the raw image moments are simply too well-determined by
+counting statistics alone for shot noise to matter; \code{moments}'s real
+error must come from somewhere else entirely.
+
+\subsection{Where \code{moments}'s real error comes from: shrinkage bias and PSF blindness}
+\label{sec:moments-bias}
+
+$A$ is $4\times10$: four raw-moment measurements cannot determine ten
+$\eta$ components, so $K$ is a \emph{regularised} (prior-shrunk)
+pseudo-inverse, not a true inverse. Even with a perfectly noiseless
+measurement $M=A\,\eta_{\rm true}$ (no Poisson noise at all), the recovered
+$\hat\eta = m_\eta + K A(\eta_{\rm true}-m_\eta) \neq \eta_{\rm true}$ in
+general -- only equal in directions where $KA$ acts as the identity. This is
+a \emph{bias}, not a variance, and it doesn't shrink with more photons
+(unlike the Poisson term above). Computing this shrinkage bias directly,
+$(I-KA)(\eta_{\rm true}-m_\eta)$, over the true $\theta$ values of the full
+aberrated dataset (4200 points) and converting back to $\theta$-space:
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+Component & Shrinkage-bias-only prediction & Empirical \code{moments} RMSE & Ratio \\
+\midrule
+$\mu_{x0}$    & $2.56\times10^{-6}$ & $9.78\times10^{-6}$ & $3.8\times$ (too small) \\
+$\mu_{vx0}$   & $9.71\times10^{-6}$ & $2.66\times10^{-6}$ & $3.7\times$ (too large) \\
+$\sigma_x$    & $9.09\times10^{-8}$ & $1.00\times10^{-5}$ & $110\times$ (too small) \\
+$\sigma_{vx}$ & $1.32\times10^{-6}$ & $9.15\times10^{-6}$ & $6.9\times$ (too small) \\
+\bottomrule
+\end{tabular}
+\end{center}
+(y-components essentially identical by symmetry, omitted.)
+
+For the position/velocity \emph{means}, this gets the right order of
+magnitude (a few $\times$) -- $\mu_{x0}$ and $\mu_{vx0}$ come out swapped in
+scale relative to a naive "read the diagonal of $I-KA$" expectation, but
+that's exactly what's expected once $KA$'s off-diagonal structure is
+accounted for: a single scalar measurement ($\mu_{xf}$) is trying to inform
+\emph{two} unknowns ($\mu_{x0}$ and $\mu_{vx0}$) simultaneously, so $K$'s
+corresponding $2\times2$ sub-block genuinely mixes credit between them
+rather than acting diagonally -- not a bug, just a reminder that
+$4\to10$-dimensional shrinkage doesn't decompose component-by-component.
+
+For the \emph{width} components, the shrinkage-bias-only picture is wrong
+by $100\times$ or more, and the reason is physical rather than
+statistical: $A$ (\code{build\_A}) models \emph{pure ballistic expansion}
+-- $V_{xf}=V_{x0}+2TC_{xv0}+T^2V_{vx0}$ -- with \textbf{no imaging
+point-spread-function term at all}. The real detected image's second
+moment $V_{xf}$ is inflated by the optical PSF on top of the true ballistic
+spread, by an amount this idealised $A$ has no way to know about, so the
+"exact constraint" $M=A\eta$ this whole propagation assumes is itself
+wrong at the scale of the PSF -- a model-misspecification bias, not a
+statistical-shrinkage one, and much larger than either term computed above.
+This is consistent with everything already observed: \code{moments}'s width
+recovery tracks \code{null} almost exactly (Table~\ref{tab:spectrum}) --
+i.e.\ the raw second image moment carries essentially \emph{no} usable width
+information once the PSF is present -- while \code{best} (which fits the
+true PSF-aware forward model via the PSMAP, not the raw moments) recovers
+width to the CRB. Quantifying the PSF-variance term explicitly to close
+this last gap numerically is listed in \S\ref{sec:open}.
+
+%%============================================================
 \section{Framing: this is a single-shot comparison, and that's intentional}
 \label{sec:framing}
 %%============================================================
@@ -419,9 +654,269 @@ through. A two-stage plug-in estimator falling short of the joint bound is a
 standard, expected effect, not a bug in either number -- the CRB is
 correctly a lower bound; this particular real pipeline doesn't saturate it.
 
-\code{1e8} and the aberrated dataset are pending (see \S\ref{sec:open}) --
-this section will be extended once the phase-shear-readout comparison
-(also requested, separate note or section) is done.
+\subsection{Result: \code{1e8} and the aberrated dataset (\code{confocal\_random\_zernike})}
+\label{sec:beta-1e8-aberrated}
+
+Same method, same $N$ used in the corresponding empirical
+\code{beta\_fits\_*.json} run ($N{=}50$ for \code{1e8}, $N{=}200$ for the
+aberrated dataset), plus \code{moments}/\code{null} for completeness.
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lccccc}
+\toprule
+Dataset & $\sigma_{\rm 1shot}$ & CRB($N$) & \code{best} & \code{moments} & \code{null} \\
+\midrule
+\code{1e8} ($N{=}50$)
+  & $1.25\times10^{-4}$ & $1.77\times10^{-5}$
+  & \makecell[l]{$A_s{=}7.40\times10^{-5}$ ($4.18\times$)\\$A_c{=}8.63\times10^{-5}$ ($4.87\times$)}
+  & \makecell[l]{$A_s{=}5.66\times10^{-4}$ ($32.0\times$)\\$A_c{=}9.36\times10^{-4}$ ($52.9\times$)}
+  & \makecell[l]{$A_s{=}6.41\times10^{-4}$ ($36.2\times$)\\$A_c{=}1.08\times10^{-3}$ ($60.9\times$)} \\
+\midrule
+\code{confocal\_random\_zernike} ($N{=}200$)
+  & $1.43\times10^{-3}$ & $1.01\times10^{-4}$
+  & \makecell[l]{$A_s{=}2.92\times10^{-3}$ ($28.9\times$)\\$A_c{=}2.24\times10^{-3}$ ($22.2\times$)}
+  & \makecell[l]{$A_s{=}1.31\times10^{-3}$ ($12.9\times$)\\$A_c{=}9.10\times10^{-4}$ ($9.0\times$)}
+  & \makecell[l]{$A_s{=}2.16\times10^{-3}$ ($21.4\times$)\\$A_c{=}1.34\times10^{-3}$ ($13.3\times$)} \\
+\bottomrule
+\end{tabular}
+\caption{$j_{\rm rel.std}=4.6\%$ (\code{1e8}), $3.9\%$ (aberrated), 30 sample
+shots each; \code{1e8} empirical from 10 runs, aberrated from the 14 runs
+completed at check time. All $\beta$ units rad.}
+\end{table}
+
+Two things worth calling out beyond the already-established two-stage
+plug-in gap (\S\ref{sec:beta-1e6}):
+
+\textbf{The gap widens with photon count and with aberration.} \code{best}'s
+ratio to the CRB grows from $2$--$3\times$ (\code{1e6}) to $4$--$5\times$
+(\code{1e8}) to $22$--$29\times$ (aberrated) -- tracking exactly the same
+progression already seen for $\theta$'s own recovery quality
+(\S\ref{sec:baseline}: \code{1e8}'s $1.2$--$1.6\times$ theta gap;
+\S\ref{sec:comparison}: the aberrated ridge is a much harder, more
+correlated recovery problem than either Gaussian baseline). This is
+consistent with the two-stage mechanism (\S\ref{sec:beta-1e6}) simply
+compounding: the worse $\theta$'s own point estimate and discarded
+correlation structure are, the more the beta fit built on top of it suffers.
+
+\textbf{Counter-intuitively, for the aberrated dataset, \code{moments}-based
+$\beta$ actually beats \code{best}-based $\beta$} ($12.9$--$9.0\times$ CRB
+vs.\ $28.9$--$22.2\times$), even though \code{moments}' own $\theta$
+recovery is uniformly worse than \code{best}'s
+(Table~\ref{tab:spectrum}) -- and even though for the two Gaussian
+baselines the ordering is the "expected" one (\code{best} beats
+\code{moments} for $\beta$, matching the $\theta$-level ordering). Not
+chased down further here (flagged in \S\ref{sec:open}), but the most
+likely explanation is again structural rather than a fluke: \code{best}'s
+particular two-stage failure mode (\S\ref{sec:beta-1e6}) throws away
+theta's ridge \emph{correlation}, and the aberrated wavefront is exactly the
+regime where that ridge is most pronounced (\S\ref{sec:ridge}) -- so the
+aberrated case may be exactly where discarding it hurts \code{best} the
+most, while \code{moments}, despite worse marginal accuracy, has a
+different (still crude, but differently-structured) error that happens not
+to interact as destructively with the beta fit's own linear-regression
+step.
+
+%%============================================================
+\section{Phase-shear readout: a structurally different model}
+\label{sec:phase-shear}
+%%============================================================
+
+Everything above uses the "kinematic" pipeline: two-port images fit
+per-shot for the full 8-parameter cloud state $\theta$, with the laser
+phase $\phi_i$ profiled out and $\beta=(A_s,A_c)$ fit across shots from the
+$\hat\phi_i$ sequence. The \emph{phase-shear} readout
+(\code{phase\_shear\_fit.py}) is a completely different measurement
+strategy for the same underlying $\beta$: instead of resolving $\theta$ and
+$\phi_i$ separately, it fits an 11-parameter Gaussian$\times$fringe model
+directly to the \emph{ground-state} port image,
+\[
+  \code{model\_image}(x,y) = \exp(\log A)\cdot
+  \exp\!\Big[-\tfrac{(x-\mu_x)^2}{2\sigma_x^2}-\tfrac{(y-\mu_y)^2}{2\sigma_y^2}\Big]
+  \cdot\big[1 + C_{\cos}\cos(\cdot) + C_{\sin}\sin(\cdot) + \dots\big],
+\]
+independently at $z{=}0$ and $z{=}100$, via a plain (no-prior) Poisson MLE.
+The fitted fringe phase $\phi_0=\arctan2(C_{\sin},C_{\cos})$ at each $z$
+gives a \emph{differential} phase $\Delta\phi = \phi_0^{z100}-\phi_0^{z0}$,
+which cancels the (unknown, shot-to-shot random) laser phase common to both
+images and is the observable this pipeline actually uses to infer $\beta$.
+This section asks the same question as before -- does a CRB predict the
+empirical scatter -- for this structurally different model, built entirely
+fresh (not reusing \code{crb\_signal.py}'s PSMAP machinery, since there is
+no PSMAP forward model here, just a closed-form fringe fit).
+
+\subsection{Fisher matrix and $\rm{CRB}(\Delta\phi)$}
+\label{sec:ps-fisher}
+
+At a fitted parameter point $p$ (11-vector), the Poisson Fisher matrix for
+\code{model\_image} is built by finite differences directly on the
+$n_{\rm bins}\times n_{\rm bins}$ pixel grid (cheap: no PSMAP lookup, just a
+closed-form elementwise expression),
+\[
+  H(p) = J^\top W J,\qquad J_{k}=\frac{\partial\,\code{model\_image}}{\partial p_k},
+  \qquad W={\rm diag}(1/\mu(p)),
+\]
+inverted with \emph{no} prior term (\code{phase\_shear\_fit.py}'s objective
+has none), then delta-methoded through $\phi_0=\arctan2(C_{\sin},C_{\cos})$
+using the $2\times2$ $(C_{\cos},C_{\sin})$ sub-covariance:
+\[
+  {\rm Var}(\phi_0) = \nabla\phi_0^\top\,{\rm Cov}(C_{\cos},C_{\sin})\,\nabla\phi_0,
+  \qquad
+  \nabla\phi_0 = \Big[\tfrac{-C_{\sin}}{C_{\cos}^2+C_{\sin}^2},\ \tfrac{C_{\cos}}{C_{\cos}^2+C_{\sin}^2}\Big].
+\]
+$\phi_0^{z0}$ and $\phi_0^{z100}$ are fit \emph{independently} (unlike the
+kinematic pipeline's shared $\phi_i$), so
+${\rm Var}(\Delta\phi)={\rm Var}(\phi_0^{z0})+{\rm Var}(\phi_0^{z100})$, and
+the effective per-shot Fisher information for $\Delta\phi$ is
+$j_{\rm eff}=1/{\rm Var}(\Delta\phi)$ -- feeding into \emph{exactly} the
+same $\beta$-CRB machinery as \S\ref{sec:beta} (\code{crb\_from\_j}), since
+$\Delta\phi_i$ plays the same role $\phi_i$ did there.
+
+\subsection{rad/$\sqrt{\rm shot}$ for this pipeline}
+\label{sec:ps-units}
+
+The conversion is identical in form to \S\ref{sec:units} -- $j_{\rm eff}$
+here is a differently-computed quantity (single-image delta-method
+information about a fringe phase, vs.\ the theta-marginalised Schur
+complement of \S\ref{sec:beta-method}), but once you have a per-shot $j$,
+everything downstream is the same formula:
+$\sigma_{\Delta\phi,\rm 1shot}=\sqrt{1/j_{\rm eff}}$ is the shot-count-independent
+number (note: no factor of 2 here, unlike \S\ref{sec:units}'s
+$\sqrt{2/j}$ -- that factor came from $\beta$ having \emph{two} free
+parameters $A_s,A_c$ sharing one scalar phase information $j$ per shot;
+here we're first reporting $\Delta\phi$'s own single-parameter CRB, one
+number, before it separately propagates into the 2-parameter $\beta$ CRB
+via \code{crb\_from\_j} exactly as in \S\ref{sec:beta-method}), and
+rad/$\sqrt{\rm Hz}$ again requires the undefined shot rate $f_{\rm rep}$:
+${\rm ASD}=\sigma_{\rm 1shot}/\sqrt{f_{\rm rep}}$.
+
+\subsection{What "CRB vs.\ empirical" means here: the systematic-bias caveat}
+\label{sec:ps-caveat}
+
+\textbf{This is the key thing to understand before reading the numbers
+below.} The CRB models \emph{pure Poisson shot noise for a model assumed to
+be exactly correctly specified} -- i.e.\ it answers "if the only source of
+error were photon counting statistics, and the 11-parameter fringe model
+were a perfect description of the image, how precisely could $\Delta\phi$
+be recovered?" The empirical results in
+\code{phase\_shear/paper/phase\_shear\_results.tex} show that the
+\emph{raw} $\Delta\phi$ residual has a large \textbf{systematic} component
+on top of this -- a "wavefront-averaging effect" that depends on the
+cloud's position/shape and does \emph{not} cancel between the $z0$ and
+$z100$ fits -- which the published analysis regresses out using either a
+fitted-feature correction (in-sample/out-of-sample) or an oracle
+(true-parameter) correction. That regression removes most, but not all, of
+the systematic, leaving a corrected residual that is closer to -- but still
+not identical to -- the pure noise floor the CRB models.
+
+So there are three fundamentally different numbers in play, and comparing
+the CRB only to the \emph{raw} one would be comparing apples to oranges: the
+\textbf{raw} residual (systematic + noise, the actual as-built pipeline's
+current performance), the \textbf{corrected} residual (fitted-feature or
+oracle, systematic mostly removed, the closest existing empirical proxy
+for "how good could this get"), and the \textbf{CRB} (noise only, by
+construction the floor \emph{under} even the corrected number, since a real
+regression correction is never perfectly efficient). Reporting all three
+side by side, rather than picking one, is the only honest way to present
+this comparison.
+
+\subsection{Empirical residual: a methodological trap, documented so it
+doesn't recur}
+\label{sec:ps-trap}
+
+The exact definition of the published residual was reverse-engineered from
+\code{phase\_shear/notebooks/shear\_mle\_distributions.ipynb} (via
+\code{jupyter nbconvert}) because a first, naive attempt --
+$\code{wrap}(\phi_0^{z100}-\phi_0^{z0}-\Delta\phi_{\rm true})$ -- gave
+$\approx142\,{\rm mrad}$ for \code{1e6}, roughly $10\times$ the published
+$13.84\,{\rm mrad}$. The notebook's actual procedure has two non-obvious
+pieces:
+\begin{enumerate}
+  \item A \textbf{sign flip}: the "estimate" of the injected signal is
+    \emph{negated} relative to the naive $\phi_0^{z100}-\phi_0^{z0}$
+    difference (a sign convention in how the notebook defines its estimator,
+    not a bug -- but invisible unless you read the notebook's own code).
+  \item The DC/mean offset (an overall constant, expected: $\Delta\phi_{\rm
+    true}$ varies shot-to-shot with a nonzero mean baked into the injected
+    signal generator) is removed via a proper \emph{circular}-mean unwrap,
+    \emph{then} an ordinary (non-circular) mean-subtraction on the
+    already-unwrapped values -- not a single naive wrapped subtraction.
+\end{enumerate}
+With the corrected formula, the reproduced number is $13.15$--$13.58\,{\rm
+mrad}$ against the published $13.84\,{\rm mrad}$ (small remaining
+difference presumably a different run subset, not a formula mismatch) --
+confirmed correct. Implementation:
+\code{python-scripts/phase\_shear\_crb\_vs\_empirical.py}'s
+\code{empirical\_delta\_phi\_std}, with the reasoning documented in its own
+docstring so this exact class of bug doesn't recur.
+
+\subsection{Results}
+\label{sec:ps-results}
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lccc}
+\toprule
+& \code{1e6} & \code{1e8} \\
+\midrule
+$j_{\rm bar}$ (per shot, 45 sample shots) & $5.95\times10^4$ & $5.82\times10^6$ \\
+${\rm CRB}(\Delta\phi)$, per-shot std & $4.10\,{\rm mrad}$ & $0.41\,{\rm mrad}$ \\
+Empirical $\Delta\phi$, \textbf{raw} (this note's formula) & $13.15\,{\rm mrad}$ & $11.55\,{\rm mrad}$ \\
+\quad ratio raw/CRB & $3.21\times$ & $27.9\times$ \\
+\midrule
+Published raw & $13.84\,{\rm mrad}$ ($3.37\times$) & $13.51\,{\rm mrad}$ ($32.6\times$) \\
+Published fitted-feat.\ (IS) & $6.65\,{\rm mrad}$ ($1.62\times$) & $1.18\,{\rm mrad}$ ($2.85\times$) \\
+Published fitted-feat.\ (OOS) & $7.22\,{\rm mrad}$ ($1.76\times$) & $1.85\,{\rm mrad}$ ($4.46\times$) \\
+Published oracle & $7.07\,{\rm mrad}$ ($1.72\times$) & $1.08\,{\rm mrad}$ ($2.60\times$) \\
+\midrule
+${\rm CRB}(\beta)$, $N{=}200/N{=}20$ shots/run & $0.41\,{\rm mrad}$ (both) & $0.13\,{\rm mrad}$ (both) \\
+Published $\beta$ raw & $5.35\,{\rm mrad}$ ($13.1\times$) & $5.35\,{\rm mrad}$ ($40.8\times$) \\
+Published $\beta$ fitted-feat.\ & $2.63\,{\rm mrad}$ ($6.4\times$) & $0.46\,{\rm mrad}$ ($3.5\times$) \\
+Published $\beta$ oracle & $2.64\,{\rm mrad}$ ($6.4\times$) & $0.33\,{\rm mrad}$ ($2.5\times$) \\
+\bottomrule
+\end{tabular}
+\caption{Ratios in parentheses are empirical/CRB. Source:
+\code{python-scripts/phase\_shear\_crb\_vs\_empirical.py}; published numbers
+from \code{phase\_shear/paper/phase\_shear\_results.tex}.}
+\end{table}
+
+\textbf{Interpretation, directly answering "what is this comparison
+saying."} Three separate, consistent findings:
+\begin{enumerate}
+  \item \textbf{The raw pipeline is nowhere near its own noise floor} --
+    $3$--$33\times$ off, and (crucially) the gap gets \emph{worse}, not
+    better, going from \code{1e6} to \code{1e8}. This is the clearest
+    possible signature of a systematic, non-shot-noise error: shot noise
+    shrinks as photon count grows (the CRB itself drops $10\times$, from
+    $4.1$ to $0.41\,{\rm mrad}$), but the raw empirical residual barely
+    moves ($13.15\to11.55\,{\rm mrad}$) because it is dominated by the
+    photon-count-\emph{independent} wavefront-averaging systematic, not by
+    counting statistics. A shrinking denominator with a flat numerator is
+    exactly why the ratio explodes at \code{1e8}.
+  \item \textbf{Once the systematic is regressed out (fitted-feature or
+    oracle), the residual drops to within $1.6$--$4.5\times$ of the CRB}
+    -- much closer, and now in the same direction/range as every other
+    "\code{best}"-style CRB gap seen elsewhere in this note
+    (\S\ref{sec:beta-1e6}, \S\ref{sec:beta-1e8-aberrated}: real, structural,
+    estimator-inefficiency gaps of a few $\times$, not systematic-bias gaps
+    of $10$--$40\times$). This is the fair comparison: it says the
+    phase-shear readout's \emph{achievable} precision, once a good
+    systematic correction is applied, is a few $\times$ the fundamental
+    shot-noise floor -- the same kind of gap the kinematic pipeline's own
+    \code{best} estimator has relative to its CRB, not a qualitatively
+    different failure.
+  \item \textbf{The CRB is doing its job correctly in both cases} -- it was
+    never claiming to predict the raw number (that would require modeling
+    the wavefront-averaging systematic, which is a model-misspecification
+    effect a Poisson-noise CRB fundamentally cannot capture, by
+    construction). Its value is as the \emph{lower bound against which to
+    judge how much of the raw error is systematic vs.\ irreducible}: here,
+    at \code{1e8}, essentially all of the raw $11.55\,{\rm mrad}$ is
+    systematic ($1.08$--$1.85\,{\rm mrad}$ of it survives correction,
+    against a $0.41\,{\rm mrad}$ floor) -- so future effort is far better
+    spent improving the systematic correction (or removing its cause) than
+    on anything noise-related.
+\end{enumerate}
 
 %%============================================================
 \section{Open questions / future work}
@@ -451,18 +946,55 @@ this section will be extended once the phase-shear-readout comparison
     atoms}$/cloud-prior/shot-count match, already on disk, just never run
     through \code{generate\_kinematic\_estimates.py}) -- worth doing if a
     tight, controlled aberration-only comparison is needed later.
-  \item \textbf{Connect to the $\beta$ (signal) CRB.} Propagate whatever
-    aberrated-vs-Gaussian theta-CRB difference is established through
-    \code{crb\_signal.py}'s existing $j_{\rm eff}\to$ beta-CRB machinery to
-    get an actual quantitative bound on how much wavefront
-    aberration/curvature costs in signal-extraction precision -- the
-    original motivating question for this whole line of work.
+  \item \textbf{Connect to the $\beta$ (signal) CRB -- done}, \S\ref{sec:beta}--\S\ref{sec:beta-1e8-aberrated}:
+    the aberrated dataset's beta-CRB is $10^{-4}\,{\rm rad}$ at $N{=}200$
+    (vs.\ \code{1e8}'s $1.8\times10^{-5}$ at $N{=}50$) -- aberration alone
+    costs roughly a $6\times$ worse phase-information floor per shot even
+    before any estimator-inefficiency gap is added on top. The general
+    aberration-vs-Gaussian quantitative bound (the \emph{original} motivating
+    question) is now answerable in principle from what's already computed
+    here; a dedicated matched-$N$ comparison (see below) would sharpen it.
   \item The current check used only \code{run\_000}'s first 10 shots for the
     CRB side (cheap: $\sim1$ minute for all of \S\ref{sec:ridge}--\ref{sec:comparison}
     combined). Widening this to more shots/runs would tighten the CRB-side
     estimate too (currently it isn't the limiting source of noise in the
     comparison, but worth checking as the empirical run finishes all 20
     runs).
+  \item \textbf{Quantify the PSF-variance term for \code{moments}}
+    (\S\ref{sec:moments-bias}): the width-recovery failure of \code{moments}
+    was diagnosed \emph{qualitatively} (the ballistic-expansion matrix $A$
+    has no PSF term, so $M=A\eta$ is itself wrong at the PSF scale) but not
+    \emph{quantitatively} -- computing the PSF's actual contribution to
+    $V_{xf}$ (from the PSMAP/optics forward model already used elsewhere in
+    this repo) and adding it as a third bias term alongside Poisson noise
+    (\S\ref{sec:moments-theory}) and shrinkage bias (\S\ref{sec:moments-bias})
+    should close the remaining $\sim100\times$ gap for $\sigma_x,\sigma_y$
+    and would make the \code{moments} error budget fully closed-form, not
+    just qualitatively understood.
+  \item \textbf{Explain why \code{moments}-$\beta$ beats \code{best}-$\beta$
+    for the aberrated dataset only} (\S\ref{sec:beta-1e8-aberrated}): flagged
+    as a real, counter-intuitive, unexplained result -- the working
+    hypothesis (that \code{best}'s two-stage cross-term loss interacts worst
+    exactly where theta's ridge is strongest) is plausible but untested;
+    would need a direct comparison of the two estimators' $\eta$-space error
+    vectors on the same shots to confirm.
+  \item \textbf{The systematic-bias-vs-noise-floor caveat
+    (\S\ref{sec:ps-caveat}) is a general principle, not just a phase-shear
+    one} -- worth stating explicitly: \emph{any} CRB in this note only
+    models the noise floor of a correctly-specified model; a large raw
+    empirical/CRB ratio anywhere in this document (e.g.\ the aberrated
+    dataset's $\beta$ ratios of $22$--$29\times$,
+    \S\ref{sec:beta-1e8-aberrated}) should always be interrogated for a
+    hidden systematic/model-misspecification component before being
+    attributed purely to estimator inefficiency -- the phase-shear section
+    is the one place in this note where that check was actually done
+    end-to-end (via the published fitted-feature/oracle corrections) and it
+    turned out to matter enormously ($33\times\to1.6\times$ once corrected).
+    The kinematic pipeline's own large gaps (aberrated $\beta$, \code{1e8}
+    theta widths) have \emph{not} yet been checked for an analogous hidden
+    systematic -- currently attributed to estimator inefficiency and
+    non-convergence respectively, but neither has been ruled out as
+    partly systematic in the same way phase-shear's raw number was.
 \end{itemize}
 
 \end{document}

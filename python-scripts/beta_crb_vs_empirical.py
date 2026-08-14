@@ -106,9 +106,13 @@ if __name__ == '__main__':
         j_rel_std = float(j_values.std() / j_bar)
 
         sigma_per_shot, crb_As, crb_Ac = beta_crb(j_bar, cfg['n_shots'])
-        emp_As, emp_Ac, n_runs_avail = empirical_beta_rmse(cfg['beta_label'], cfg['n_runs'], cfg['n_shots'])
+        emp_As, emp_Ac, n_runs_avail = empirical_beta_rmse(cfg['beta_label'], cfg['n_runs'], cfg['n_shots'], method='best')
+        mom_As, mom_Ac, _ = empirical_beta_rmse(cfg['beta_label'], cfg['n_runs'], cfg['n_shots'], method='moments')
+        null_As, null_Ac, _ = empirical_beta_rmse(cfg['beta_label'], cfg['n_runs'], cfg['n_shots'], method='null')
 
         print(f'{cfg["name"]:45s} {j_bar:12.4e} {j_rel_std:10.3f}   '
-              f'{sigma_per_shot:14.4e} {crb_As:10.4e} {crb_Ac:10.4e}   '
-              f'{emp_As:10.4e} {emp_Ac:10.4e}   {emp_As / crb_As:9.3f} {emp_Ac / crb_Ac:9.3f}')
+              f'{sigma_per_shot:14.4e} {crb_As:10.4e} {crb_Ac:10.4e}')
+        print(f'{"":45s} best   : As={emp_As:.4e} (x{emp_As / crb_As:.2f})  Ac={emp_Ac:.4e} (x{emp_Ac / crb_Ac:.2f})')
+        print(f'{"":45s} moments: As={mom_As:.4e} (x{mom_As / crb_As:.2f})  Ac={mom_Ac:.4e} (x{mom_Ac / crb_Ac:.2f})')
+        print(f'{"":45s} null   : As={null_As:.4e} (x{null_As / crb_As:.2f})  Ac={null_Ac:.4e} (x{null_Ac / crb_Ac:.2f})')
         print(f'{"":45s} (j from {len(shots)} sample shots; empirical from {n_runs_avail} independent runs)')
