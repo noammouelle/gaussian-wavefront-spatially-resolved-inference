@@ -45,6 +45,9 @@ p.add_argument('--verbose', '-v', action='store_true',
                      'run (the per-shot "best" pixel-likelihood fit is the slow step and is '
                      'otherwise silent until the whole run finishes)')
 args = p.parse_args()
+args.dataset = args.dataset.rstrip('/')   # normalize: a trailing slash would otherwise make
+                                            # guard_label_reuse treat this as a different dataset
+                                            # than an identical earlier invocation without one
 
 N_RUNS = args.n_runs
 N_SHOTS = args.n_shots

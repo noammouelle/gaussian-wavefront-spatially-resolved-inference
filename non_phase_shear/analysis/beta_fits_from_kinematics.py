@@ -40,6 +40,9 @@ p.add_argument('--verbose', '-v', action='store_true',
                      'GH-batched across shots, so per-shot progress is not meaningful here -- '
                      'per-run/per-method is the finest useful granularity)')
 args = p.parse_args()
+args.dataset = args.dataset.rstrip('/')   # normalize: a trailing slash would otherwise make
+                                            # guard_label_reuse treat this as a different dataset
+                                            # than an identical earlier invocation without one
 
 N_RUNS = args.n_runs
 N_SHOTS = args.n_shots
