@@ -174,9 +174,9 @@ def _init_h5(f, phi0, delta_phi, cloud_params, signal_params,
 
     chunk = (1, res, res)
     f.create_dataset('images_s0', shape=(n_shots, res, res), dtype=np.uint16,
-                     chunks=chunk, compression='gzip', compression_opts=4)
+                     chunks=chunk, compression='lzf')
     f.create_dataset('images_s1', shape=(n_shots, res, res), dtype=np.uint16,
-                     chunks=chunk, compression='gzip', compression_opts=4)
+                     chunks=chunk, compression='lzf')
 
     # per-shot metadata
     f.create_dataset('phi0',      data=phi0)
