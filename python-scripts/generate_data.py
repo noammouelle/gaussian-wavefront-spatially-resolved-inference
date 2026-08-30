@@ -86,9 +86,11 @@ Options
   --sigma_vx_mean / --sigma_vx_std  mean/std of σ_vx, σ_vy [m/s] (default: 3.09e-4 / 10e-6)
 
   -- Linear phase ramp (applied to final-position atoms at the selected site):
-  --linear_phase_kappa      Slope κ [rad/m] of the phase ramp φ = κ·xf (default: 0 = off)
+  --linear_phase_kappa      Slope κ_x [rad/m] of the phase ramp along xf (default: 0)
+  --linear_phase_kappa_y    Slope κ_y [rad/m] of the phase ramp along yf (default: 0)
   --linear_phase_site       Which interferometer to apply it to: Z0 | Z100 | both (default: both)
-  --linear_phase_coordinate Spatial coordinate for the ramp (currently only 'xf'; default: xf)
+  For a shear at angle θ: kappa_x = |κ|cos(θ), kappa_y = |κ|sin(θ).
+  E.g. |κ|=31400 at 45°: --linear_phase_kappa 22203.6 --linear_phase_kappa_y 22203.6
 """
 
 import argparse
@@ -199,8 +201,8 @@ def _init_h5(f, phi0, delta_phi, cloud_params, signal_params,
     f.attrs['signal_phase']     = signal_params['phase']
     f.attrs['linear_phase_applied']    = bool(linear_phase_params['applied'])
     f.attrs['linear_phase_kappa']      = float(linear_phase_params['kappa'])
+    f.attrs['linear_phase_kappa_y']    = float(linear_phase_params['kappa_y'])
     f.attrs['linear_phase_site']       = str(linear_phase_params['site'])
-    f.attrs['linear_phase_coordinate'] = str(linear_phase_params['coordinate'])
 
 
 def _write_shot_image(f, shot_i, img_s0, img_s1):
@@ -209,12 +211,14 @@ def _write_shot_image(f, shot_i, img_s0, img_s1):
     f['images_s1'][shot_i] = img_s1
 
 
-def _linear_phase_profile(kappa, coordinate):
-    if kappa == 0.0:
+def _linear_phase_profile(kappa_x, kappa_y=0.0):
+    if kappa_x == 0.0 and kappa_y == 0.0:
         return None
-    if coordinate != 'xf':
-        raise ValueError(f'Unsupported linear phase coordinate: {coordinate}')
-    return lambda xf, yf, vxf, vyf: kappa * xf
+    if kappa_y == 0.0:
+        return lambda xf, yf, vxf, vyf: kappa_x * xf
+    if kappa_x == 0.0:
+        return lambda xf, yf, vxf, vyf: kappa_y * yf
+    return lambda xf, yf, vxf, vyf: kappa_x * xf + kappa_y * yf
 
 
 def _iter_shots(surrogate, cloud_params, phi0, n_atoms, edges, rng,
@@ -294,16 +298,18 @@ def _simulate_run(run_idx, rng, args, surrogates, data_root,
                            f'run_{run_idx:03d}', z0_label, 'data_IMG.h5')
         os.makedirs(os.path.dirname(out), exist_ok=True)
 
-        apply_ramp = (args.linear_phase_kappa != 0.0
+        has_ramp = (args.linear_phase_kappa != 0.0
+                    or args.linear_phase_kappa_y != 0.0)
+        apply_ramp = (has_ramp
                       and args.linear_phase_site in (z0_label, 'both'))
         phase_profile = (_linear_phase_profile(args.linear_phase_kappa,
-                                               args.linear_phase_coordinate)
+                                               args.linear_phase_kappa_y)
                          if apply_ramp else None)
         linear_phase_params = {
             'applied': apply_ramp,
             'kappa': args.linear_phase_kappa,
+            'kappa_y': args.linear_phase_kappa_y,
             'site': args.linear_phase_site,
-            'coordinate': args.linear_phase_coordinate,
         }
 
         with h5py.File(out, 'w') as f:
@@ -344,10 +350,12 @@ def main():
     p.add_argument('--sigma_x_std',    type=float, default=10e-6)
     p.add_argument('--sigma_vx_mean',  type=float, default=100e-6)
     p.add_argument('--sigma_vx_std',   type=float, default=10e-6)
-    p.add_argument('--linear_phase_kappa', type=float, default=0.0)
+    p.add_argument('--linear_phase_kappa', type=float, default=0.0,
+                   help='κ_x [rad/m] along xf')
+    p.add_argument('--linear_phase_kappa_y', type=float, default=0.0,
+                   help='κ_y [rad/m] along yf')
     p.add_argument('--linear_phase_site', choices=['Z0', 'Z100', 'both'],
                    default='both')
-    p.add_argument('--linear_phase_coordinate', choices=['xf'], default='xf')
 
     args = p.parse_args()
 
@@ -370,9 +378,11 @@ def main():
             f'_phi0{args.phi0_mode}'
             f'{signal_tag}'
         )
-        if args.linear_phase_kappa != 0.0:
-            args.run_name += (f'_kappa{args.linear_phase_kappa:.2e}'
-                              f'_{args.linear_phase_site}')
+        if args.linear_phase_kappa != 0.0 or args.linear_phase_kappa_y != 0.0:
+            args.run_name += f'_kappa{args.linear_phase_kappa:.2e}'
+            if args.linear_phase_kappa_y != 0.0:
+                args.run_name += f'_kappaY{args.linear_phase_kappa_y:.2e}'
+            args.run_name += f'_{args.linear_phase_site}'
 
     seed_seq    = np.random.SeedSequence(args.seed)
     n_total     = args.run_start + args.n_runs
@@ -400,10 +410,10 @@ def main():
         print(f'  signal      : amp={args.signal_amp:.3f} rad'
               f'  freq={args.signal_freq:.4f} cyc/shot'
               f'  phase={args.signal_phase:.3f} rad')
-    if args.linear_phase_kappa != 0.0:
-        print(f'  phase ramp  : kappa={args.linear_phase_kappa:g} rad/m'
-              f'  site={args.linear_phase_site}'
-              f'  coordinate={args.linear_phase_coordinate}')
+    if args.linear_phase_kappa != 0.0 or args.linear_phase_kappa_y != 0.0:
+        ky_str = f'  kappa_y={args.linear_phase_kappa_y:g}' if args.linear_phase_kappa_y != 0.0 else ''
+        print(f'  phase ramp  : kappa_x={args.linear_phase_kappa:g} rad/m'
+              f'{ky_str}  site={args.linear_phase_site}')
     print()
 
     print('Loading surrogates …', end=' ', flush=True)
